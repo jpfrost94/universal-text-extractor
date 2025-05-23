@@ -4,7 +4,7 @@ import tempfile
 import re
 import csv
 import json
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 import email
 from io import StringIO
 from datetime import datetime
