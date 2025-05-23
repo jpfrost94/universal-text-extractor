@@ -641,6 +641,158 @@ if st.session_state.extraction_status:
                     else:
                         st.info(f"[{timestamp}] {message}")
 
+# User Statistics page
+elif page == "My Statistics":
+    if st.session_state.authenticated and not st.session_state.is_admin:
+        st.title("My Statistics")
+        
+        username = st.session_state.username
+        
+        # Get user-specific statistics from the database
+        # In a real implementation, this would filter by user ID
+        stats = get_analytics_summary()
+        
+        # Display user-specific stats
+        st.subheader("Your Document Processing History")
+        
+        # User total processed
+        user_total = 0
+        for user, count in stats.get("top_users", []):
+            if user == username:
+                user_total = count
+                break
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Your Files Processed", user_total)
+        with col2:
+            st.metric("Successful Extractions", int(user_total * stats.get("success_rate", 0) / 100))
+        with col3:
+            st.metric("OCR Used", int(user_total * stats.get("ocr_usage", 0) / 100))
+        
+        # Display user's recent activity
+        st.subheader("Your Recent Activity")
+        st.info("This feature will show your recent document processing history.")
+        
+        # Tips for better extraction results
+        st.subheader("Tips for Better Results")
+        st.markdown("""
+        - For scanned documents, enable OCR processing
+        - Try image preprocessing for better OCR results
+        - For PDFs with embedded text, disable OCR to speed up processing
+        - Large files may take longer to process
+        """)
+
+# User Feedback page
+elif page == "Feedback":
+    if st.session_state.authenticated and not st.session_state.is_admin:
+        st.title("Provide Feedback")
+        
+        # Feedback form
+        with st.form("feedback_form"):
+            st.write("We value your feedback on the Text Extraction Tool")
+            
+            feedback_type = st.selectbox(
+                "Feedback Type",
+                ["General Feedback", "Bug Report", "Feature Request", "Usability Issue"]
+            )
+            
+            feedback_text = st.text_area(
+                "Your Feedback",
+                height=150,
+                placeholder="Please describe your experience, issue, or suggestion..."
+            )
+            
+            rating = st.slider(
+                "Rate your experience with the tool",
+                min_value=1,
+                max_value=5,
+                value=3,
+                help="1 = Poor, 5 = Excellent"
+            )
+            
+            submit_button = st.form_submit_button("Submit Feedback")
+            
+            if submit_button and feedback_text:
+                # Store feedback in session state for now
+                # In a real implementation, this would be saved to a database
+                if username not in st.session_state.user_feedback:
+                    st.session_state.user_feedback[username] = []
+                
+                st.session_state.user_feedback[username].append({
+                    "type": feedback_type,
+                    "text": feedback_text,
+                    "rating": rating,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                
+                st.success("Thank you for your feedback! We'll use it to improve the tool.")
+            elif submit_button:
+                st.warning("Please provide your feedback before submitting.")
+        
+        # Display previous feedback from this user
+        if username in st.session_state.user_feedback and st.session_state.user_feedback[username]:
+            st.subheader("Your Previous Feedback")
+            for i, fb in enumerate(st.session_state.user_feedback[username]):
+                with st.expander(f"Feedback #{i+1} - {fb['timestamp']}"):
+                    st.write(f"**Type:** {fb['type']}")
+                    st.write(f"**Rating:** {'⭐' * fb['rating']}")
+                    st.write(f"**Feedback:** {fb['text']}")
+
+# Admin Panel page
+elif page == "Admin Panel":
+    if st.session_state.authenticated and st.session_state.is_admin:
+        st.title("Admin Panel")
+        
+        admin_tabs = st.tabs(["User Management", "Feedback Management", "System Settings"])
+        
+        with admin_tabs[0]:
+            st.subheader("User Management")
+            
+            # Add new user form
+            with st.expander("Add New User", expanded=False):
+                new_username = st.text_input("New Username", key="new_username")
+                new_password = st.text_input("New Password", type="password", key="new_password")
+                is_new_admin = st.checkbox("Admin Access", value=False, key="is_new_admin")
+                
+                if st.button("Add User"):
+                    if new_username and new_password:
+                        role = ROLE_ADMIN if is_new_admin else ROLE_USER
+                        if add_user(new_username, new_password, role):
+                            st.success(f"User '{new_username}' added successfully.")
+                        else:
+                            st.error(f"User '{new_username}' already exists.")
+                    else:
+                        st.warning("Username and password are required.")
+        
+        with admin_tabs[1]:
+            st.subheader("User Feedback")
+            
+            # Display all feedback from users
+            if st.session_state.user_feedback:
+                for user, feedbacks in st.session_state.user_feedback.items():
+                    st.subheader(f"Feedback from {user}")
+                    for i, fb in enumerate(feedbacks):
+                        with st.expander(f"{fb['type']} - {fb['timestamp']}"):
+                            st.write(f"**Rating:** {'⭐' * fb['rating']}")
+                            st.write(f"**Feedback:** {fb['text']}")
+            else:
+                st.info("No feedback has been submitted yet.")
+        
+        with admin_tabs[2]:
+            st.subheader("System Settings")
+            
+            # OCR Settings
+            st.write("OCR Settings")
+            st.warning("OCR settings management will be implemented in a future update.")
+            
+            # Reset Statistics
+            st.write("Statistics Management")
+            if st.button("Reset All Statistics", type="secondary"):
+                reset_analytics()
+                st.success("Usage statistics have been reset.")
+                st.rerun()
+
 # Add footer
 st.divider()
 st.markdown("""
