@@ -11,7 +11,8 @@ ROLE_ADMIN = "admin"
 
 # Default admin credentials (for initial setup only)
 DEFAULT_ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123"  # Would be changed on first use
+# Generate a random password for initial admin account
+DEFAULT_ADMIN_PASSWORD = base64.b64encode(os.urandom(12)).decode('utf-8')
 
 def initialize_users():
     """

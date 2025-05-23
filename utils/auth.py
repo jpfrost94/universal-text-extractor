@@ -10,7 +10,13 @@ USERS_FILE = "users.json"
 
 # Default admin credentials (for initial setup only)
 DEFAULT_ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123"  # Would be changed on first use in a real system
+# Generate a secure random password for initial setup
+import secrets
+import string
+def generate_secure_password(length=16):
+    """Generate a cryptographically secure random password"""
+    alphabet = string.ascii_letters + string.digits + string.punctuation
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 # User roles
 ROLE_USER = "user"
