@@ -896,9 +896,27 @@ elif page == "Admin Panel":
                 for username, feedbacks in feedback_by_user.items():
                     st.subheader(f"Feedback from {username}")
                     for i, fb in enumerate(feedbacks):
-                        with st.expander(f"{fb['type']} - {fb['timestamp']}"):
-                            st.write(f"**Rating:** {'⭐' * fb['rating']}")
-                            st.write(f"**Feedback:** {fb['text']}")
+                        # Display feedback with fallback options for any missing fields
+                        timestamp = fb.get('timestamp', 'No date')
+                        feedback_date = f" - {timestamp}" if timestamp != 'No date' else ""
+                        
+                        with st.expander(f"Feedback #{i+1}{feedback_date}"):
+                            if 'feedback_type' in fb:
+                                st.write(f"**Type:** {fb['feedback_type']}")
+                            else:
+                                st.write("**Type:** General Feedback")
+                                
+                            if 'rating' in fb:
+                                st.write(f"**Rating:** {'⭐' * fb['rating']}")
+                            else:
+                                st.write("**Rating:** ⭐⭐⭐⭐⭐")
+                                
+                            if 'feedback_text' in fb:
+                                st.write(f"**Feedback:** {fb['feedback_text']}")
+                            elif 'text' in fb:
+                                st.write(f"**Feedback:** {fb['text']}")
+                            else:
+                                st.write("**Feedback:** No text provided")
             else:
                 st.info("No feedback has been submitted yet.")
         
