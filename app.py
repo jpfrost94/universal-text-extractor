@@ -81,12 +81,55 @@ def format_file_types():
 # Initialize analytics
 initialize_analytics()
 
+# Login function
+def login():
+    st.sidebar.title("Login")
+    username = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type="password")
+    
+    if st.sidebar.button("Login"):
+        user = authenticate_user(username, password)
+        if user:
+            st.session_state.authenticated = True
+            st.session_state.username = username
+            st.session_state.is_admin = is_admin(username)
+            st.sidebar.success(f"Logged in as {username}")
+            
+            # Force page reload to update UI
+            st.rerun()
+        else:
+            st.sidebar.error("Invalid username or password")
+
+# Logout function
+def logout():
+    if st.sidebar.button("Logout"):
+        st.session_state.authenticated = False
+        st.session_state.username = None
+        st.session_state.is_admin = False
+        
+        # Force page reload to update UI
+        st.rerun()
+
 # Sidebar
 with st.sidebar:
     st.title("Text Extraction Tool")
     
-    # Navigation
-    page = st.radio("Navigation", ["Text Extraction", "Usage Statistics"], label_visibility="collapsed")
+    # Login/logout section
+    if st.session_state.authenticated:
+        st.write(f"Logged in as: **{st.session_state.username}**")
+        if st.session_state.is_admin:
+            st.write("Role: **Administrator**")
+        else:
+            st.write("Role: **User**")
+        logout()
+    else:
+        login()
+    
+    # Navigation - restrict access to statistics for admins only
+    if st.session_state.authenticated and st.session_state.is_admin:
+        page = st.radio("Navigation", ["Text Extraction", "Usage Statistics"])
+    else:
+        page = "Text Extraction"
     
     # OCR availability info
     ocr_available = is_ocr_available()
@@ -133,82 +176,123 @@ if page == "Text Extraction":
         type=sum(SUPPORTED_FILE_TYPES.values(), []),
         help="Upload a file to extract text from it."
     )
+    
+    # OCR and image processing options
+    show_advanced = False
+    use_ocr = False
+    ocr_language = "eng"
+    enhance_image = False
+    grayscale = False
+    contrast_enhancement = 1.0
+    threshold_value = 128
+    noise_reduction = False
 elif page == "Usage Statistics":
     st.title("Usage Statistics")
     
-    # Display the analytics dashboard
-    st.write("This page shows anonymous usage statistics about how the text extraction tool is being used.")
-    
-    # Get statistics summary
-    stats = get_analytics_summary()
-    
-    # Display key metrics
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total Files Processed", stats["total_files_processed"])
-    
-    with col2:
-        success_rate = f"{stats['successful_rate']:.1f}%"
-        st.metric("Success Rate", success_rate)
-    
-    with col3:
-        ocr_rate = f"{stats['ocr_usage_rate']:.1f}%"
-        st.metric("OCR Usage", ocr_rate)
-    
-    # File Type Analysis
-    st.subheader("File Type Analysis")
-    
-    if stats["top_file_types"]:
-        # Create data for a chart
-        labels = [f".{ft}" for ft, _ in stats["top_file_types"]]
-        values = [count for _, count in stats["top_file_types"]]
+    # Check if user is authenticated and is an admin
+    if not st.session_state.authenticated:
+        st.warning("You need to log in to access this page.")
+        st.info("Please log in using the sidebar.")
+    elif not st.session_state.is_admin:
+        st.error("You don't have permission to access the usage statistics.")
+        st.info("This page is only accessible to administrators.")
+    else:
+        # Display the analytics dashboard for admins
+        st.success("Viewing statistics as administrator")
+        st.write("This page shows anonymous usage statistics about how the text extraction tool is being used.")
         
-        # Display as a table for now (could be a chart in a real implementation)
-        file_type_data = {"File Type": labels, "Count": values}
-        st.table(file_type_data)
-    else:
-        st.info("No file type data available yet.")
-    
-    # File Size Distribution
-    st.subheader("File Size Distribution")
-    
-    file_sizes = stats["file_sizes"]
-    if sum(file_sizes.values()) > 0:
-        # Display as a table
-        size_data = {"Size Range": list(file_sizes.keys()), "Count": list(file_sizes.values())}
-        st.table(size_data)
-    else:
-        st.info("No file size data available yet.")
-    
-    # Usage Trend
-    st.subheader("Usage Trend (Last 7 Days)")
-    
-    trend_data = {"Date": stats["usage_trend"]["days"], "Files Processed": stats["usage_trend"]["counts"]}
-    st.line_chart(trend_data, x="Date")
-    
-    # Top Users (if tracking is enabled)
-    if stats["top_users"] and stats["top_users"][0][0] != "anonymous":
-        st.subheader("Top Users")
-        user_data = {"User": [u for u, _ in stats["top_users"]], "Files Processed": [c for _, c in stats["top_users"]]}
-        st.table(user_data)
-    
-    # Admin controls
-    st.divider()
-    if st.button("Reset Statistics", type="secondary"):
-        reset_analytics()
-        st.success("Usage statistics have been reset.")
-        st.rerun()
-    
-    # Download CSV option
-    if os.path.exists("usage_statistics.csv"):
-        with open("usage_statistics.csv", "rb") as file:
-            st.download_button(
-                label="Download Statistics as CSV",
-                data=file,
-                file_name="text_extractor_statistics.csv",
-                mime="text/csv"
-            )
+        # Get statistics summary
+        stats = get_analytics_summary()
+        
+        # Display key metrics
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total Files Processed", stats["total_files_processed"])
+        
+        with col2:
+            success_rate = f"{stats['successful_rate']:.1f}%"
+            st.metric("Success Rate", success_rate)
+        
+        with col3:
+            ocr_rate = f"{stats['ocr_usage_rate']:.1f}%"
+            st.metric("OCR Usage", ocr_rate)
+        
+        # File Type Analysis
+        st.subheader("File Type Analysis")
+        
+        if stats["top_file_types"]:
+            # Create data for a chart
+            labels = [f".{ft}" for ft, _ in stats["top_file_types"]]
+            values = [count for _, count in stats["top_file_types"]]
+            
+            # Display as a table for now (could be a chart in a real implementation)
+            file_type_data = {"File Type": labels, "Count": values}
+            st.table(file_type_data)
+        else:
+            st.info("No file type data available yet.")
+        
+        # File Size Distribution
+        st.subheader("File Size Distribution")
+        
+        file_sizes = stats["file_sizes"]
+        if sum(file_sizes.values()) > 0:
+            # Display as a table
+            size_data = {"Size Range": list(file_sizes.keys()), "Count": list(file_sizes.values())}
+            st.table(size_data)
+        else:
+            st.info("No file size data available yet.")
+        
+        # Usage Trend
+        st.subheader("Usage Trend (Last 7 Days)")
+        
+        trend_data = {"Date": stats["usage_trend"]["days"], "Files Processed": stats["usage_trend"]["counts"]}
+        st.line_chart(trend_data, x="Date")
+        
+        # Top Users (if tracking is enabled)
+        if stats["top_users"] and stats["top_users"][0][0] != "anonymous":
+            st.subheader("Top Users")
+            user_data = {"User": [u for u, _ in stats["top_users"]], "Files Processed": [c for _, c in stats["top_users"]]}
+            st.table(user_data)
+        
+        # Admin controls
+        st.divider()
+        
+        # Statistics management
+        st.subheader("Statistics Management")
+        if st.button("Reset Statistics", type="secondary"):
+            reset_analytics()
+            st.success("Usage statistics have been reset.")
+            st.rerun()
+        
+        # Download CSV option
+        if os.path.exists("usage_statistics.csv"):
+            with open("usage_statistics.csv", "rb") as file:
+                st.download_button(
+                    label="Download Statistics as CSV",
+                    data=file,
+                    file_name="text_extractor_statistics.csv",
+                    mime="text/csv"
+                )
+        
+        # User Management section
+        st.subheader("User Management")
+        
+        # Add new user form
+        with st.expander("Add New User", expanded=False):
+            new_username = st.text_input("New Username", key="new_username")
+            new_password = st.text_input("New Password", type="password", key="new_password")
+            is_new_admin = st.checkbox("Admin Access", value=False, key="is_new_admin")
+            
+            if st.button("Add User"):
+                if new_username and new_password:
+                    role = ROLE_ADMIN if is_new_admin else "user"
+                    if add_user(new_username, new_password, role):
+                        st.success(f"User '{new_username}' added successfully.")
+                    else:
+                        st.error(f"User '{new_username}' already exists.")
+                else:
+                    st.warning("Username and password are required.")
 else:
     # File uploader (fallback if the navigation somehow fails)
     uploaded_file = st.file_uploader(
@@ -217,67 +301,77 @@ else:
         help="Upload a file to extract text from it."
     )
 
-# OCR and image processing options
-show_advanced = False
-use_ocr = False
-ocr_language = "eng"
-enhance_image = False
-grayscale = False
-contrast_enhancement = 1.0
-threshold_value = 128
-noise_reduction = False
-
 # Only show advanced options if a file is uploaded
-if uploaded_file:
+if 'uploaded_file' in locals() and uploaded_file is not None:
+    # OCR and image processing options
     show_advanced = st.checkbox("Show advanced options", value=False)
-
-# Advanced options UI
-if show_advanced and uploaded_file:
-    # Detect if the uploaded file is an image or might need OCR
-    file_ext = os.path.splitext(uploaded_file.name)[1].lower().replace('.', '')
     
-    is_image = file_ext in SUPPORTED_IMAGE_FORMATS
-    might_need_ocr = is_image or file_ext == 'pdf'
+    # Advanced options UI
+    if show_advanced:
+        # Default values
+        use_ocr = False
+        ocr_language = "eng"
+        enhance_image = False
+        grayscale = False
+        contrast_enhancement = 1.0
+        threshold_value = 128
+        noise_reduction = False
     
-    # Only show OCR options if OCR is available and the file might need it
-    if might_need_ocr and ocr_available:
-        st.subheader("OCR Options")
-        col1, col2 = st.columns(2)
+        # Detect if the uploaded file is an image or might need OCR
+        file_ext = os.path.splitext(uploaded_file.name)[1].lower().replace('.', '')
         
-        with col1:
-            use_ocr = st.checkbox("Use OCR", value=True,
-                                help="Use Optical Character Recognition to extract text from images or scanned documents")
+        is_image = file_ext in SUPPORTED_IMAGE_FORMATS
+        might_need_ocr = is_image or file_ext == 'pdf'
         
-        with col2:
-            ocr_language = st.selectbox("OCR Language", ["eng", "fra", "deu", "spa", "ita", "por", "chi_sim", "jpn", "kor"],
-                                    help="Select the language of the text to be recognized")
-    
-    # Image preprocessing options (only for images or if using OCR)
-    if is_image or (might_need_ocr and use_ocr):
-        st.subheader("Image Preprocessing")
+        # Only show OCR options if OCR is available and the file might need it
+        if might_need_ocr and ocr_available:
+            st.subheader("OCR Options")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                use_ocr = st.checkbox("Use OCR", value=True,
+                                    help="Use Optical Character Recognition to extract text from images or scanned documents")
+            
+            with col2:
+                ocr_language = st.selectbox("OCR Language", ["eng", "fra", "deu", "spa", "ita", "por", "chi_sim", "jpn", "kor"],
+                                        help="Select the language of the text to be recognized")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            enhance_image = st.checkbox("Enhance Image", value=False,
-                                    help="Apply image enhancement techniques to improve OCR results")
-            grayscale = st.checkbox("Convert to Grayscale", value=True,
-                                help="Convert image to grayscale before processing")
-        
-        with col2:
-            contrast_enhancement = st.slider("Contrast", 0.5, 2.0, 1.0, 0.1,
-                                        help="Adjust image contrast to improve text visibility")
-            if enhance_image:
-                threshold_value = st.slider("Threshold", 0, 255, 128, 1,
-                                        help="Threshold value for binarization")
-                noise_reduction = st.checkbox("Reduce Noise", value=True,
-                                        help="Apply noise reduction filters")
+        # Image preprocessing options (only for images or if using OCR)
+        if is_image or (might_need_ocr and use_ocr):
+            st.subheader("Image Preprocessing")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                enhance_image = st.checkbox("Enhance Image", value=False,
+                                        help="Apply image enhancement techniques to improve OCR results")
+                grayscale = st.checkbox("Convert to Grayscale", value=True,
+                                    help="Convert image to grayscale before processing")
+            
+            with col2:
+                contrast_enhancement = st.slider("Contrast", 0.5, 2.0, 1.0, 0.1,
+                                            help="Adjust image contrast to improve text visibility")
+                if enhance_image:
+                    threshold_value = st.slider("Threshold", 0, 255, 128, 1,
+                                            help="Threshold value for binarization")
+                    noise_reduction = st.checkbox("Reduce Noise", value=True,
+                                            help="Apply noise reduction filters")
+else:
+    # Default values when no file is uploaded
+    show_advanced = False
+    use_ocr = False
+    ocr_language = "eng"
+    enhance_image = False
+    grayscale = False
+    contrast_enhancement = 1.0
+    threshold_value = 128
+    noise_reduction = False
 
 # Process Button
 process_clicked = st.button("Process Document", type="primary", use_container_width=True)
 
 # Process the file when button is clicked
-if process_clicked and uploaded_file is not None:
+if process_clicked and 'uploaded_file' in locals() and uploaded_file is not None:
     # Clear previous results
     st.session_state.extracted_text = ""
     st.session_state.file_name = uploaded_file.name
