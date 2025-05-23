@@ -15,6 +15,9 @@ from utils.database import (
     get_analytics_summary, log_extraction_event, reset_analytics,
     get_user_by_username as db_get_user
 )
+from utils.data_management import (
+    get_data_older_than, cleanup_old_data, export_user_data
+)
 from utils.auth_db import (
     authenticate_user, is_admin, add_user, change_password,
     initialize_users, ROLE_ADMIN, ROLE_USER
@@ -706,8 +709,6 @@ elif page == "My Statistics":
             """)
             
             # Show expiring data count
-            from utils.database import get_data_older_than
-            
             expiring_extractions = len(get_data_older_than(60, "extraction_logs"))
             if expiring_extractions > 0:
                 st.warning(f"You have {expiring_extractions} extraction records that will expire soon. Consider exporting your data.")
@@ -717,7 +718,6 @@ elif page == "My Statistics":
             cleanup_days = st.slider("Delete data older than (days)", min_value=30, max_value=365, value=90, step=30)
             
             if st.button("Clean Up Old Data"):
-                from utils.database import cleanup_old_data
                 deleted_count = cleanup_old_data(cleanup_days, "extraction_logs")
                 st.success(f"Removed {deleted_count} old extraction records.")
                 st.rerun()
@@ -756,9 +756,7 @@ elif page == "My Statistics":
             data_types = [data_map[d] for d in export_data]
             
             if st.button("Generate Export"):
-                from utils.database import export_user_data
-                
-                export_data = export_user_data(username, format_type, data_types)
+                export_data_result = export_user_data(username, format_type, data_types)
                 
                 if format_type == "json":
                     mime_type = "application/json"
@@ -773,7 +771,7 @@ elif page == "My Statistics":
                 # Allow user to download the export
                 st.download_button(
                     label="Download Export",
-                    data=export_data,
+                    data=export_data_result,
                     file_name=f"text_extractor_data_{username}_{datetime.now().strftime('%Y%m%d')}.{file_ext}",
                     mime=mime_type
                 )

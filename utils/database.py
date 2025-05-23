@@ -787,7 +787,7 @@ def export_user_data(username, format_type="json", data_types=None):
         print(f"Error exporting user data: {e}")
         return f"Error exporting data: {str(e)}"
 
-# Data retention and export features
+# Data management functions
 def get_data_older_than(days, data_type="extraction_logs"):
     """
     Get data that is older than the specified number of days
