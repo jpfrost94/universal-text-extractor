@@ -270,11 +270,21 @@ elif page == "Usage Statistics":
             st.metric("Total Files Processed", stats["total_processed"])
         
         with col2:
-            success_rate = f"{stats['successful_rate']:.1f}%"
+            # Check if the key exists, otherwise provide a default value
+            if 'successful_rate' in stats:
+                success_rate = f"{stats['successful_rate']:.1f}%"
+            elif 'success_rate' in stats:
+                success_rate = f"{stats['success_rate']:.1f}%"
+            else:
+                success_rate = "0.0%"
             st.metric("Success Rate", success_rate)
         
         with col3:
-            ocr_rate = f"{stats['ocr_usage_rate']:.1f}%"
+            # Check if the key exists, otherwise provide a default value
+            if 'ocr_usage_rate' in stats:
+                ocr_rate = f"{stats['ocr_usage_rate']:.1f}%"
+            else:
+                ocr_rate = "0.0%"
             st.metric("OCR Usage", ocr_rate)
         
         # File Type Analysis
