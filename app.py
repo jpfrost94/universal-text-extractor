@@ -11,13 +11,13 @@ from utils.file_handlers import (
 from utils.export_utils import export_text
 from utils.ocr_utils import is_ocr_available, get_available_ocr_backends
 from utils.image_processing import preprocess_image
-from utils.analytics import (
-    initialize_analytics, log_extraction_event, 
-    get_analytics_summary, reset_analytics
+from utils.database import (
+    get_analytics_summary, log_extraction_event, reset_analytics,
+    get_user_by_username as db_get_user
 )
-from utils.auth import (
-    initialize_users, authenticate_user, is_admin,
-    add_user, change_password, ROLE_ADMIN
+from utils.auth_db import (
+    authenticate_user, is_admin, add_user, change_password,
+    initialize_users, ROLE_ADMIN
 )
 
 # Page configuration
@@ -54,9 +54,6 @@ if 'is_admin' not in st.session_state:
 
 # Initialize authentication system
 initialize_users()
-
-# Initialize analytics
-initialize_analytics()
 
 def add_log(message, level="info"):
     """Add a timestamped log message to the session state."""
@@ -453,13 +450,13 @@ if process_clicked and 'uploaded_file' in locals() and uploaded_file is not None
         
         # Log the extraction event
         log_extraction_event(
+            user_id=st.session_state.username if st.session_state.authenticated else "anonymous",
             file_name=uploaded_file.name,
             file_type=file_type,
             file_size_bytes=file_size,
             processing_time=elapsed_time,
             success=success,
-            ocr_used=ocr_used,
-            user_id="anonymous"  # You can track user ID if you implement auth
+            ocr_used=ocr_used
         )
         
         # Clean up temp file

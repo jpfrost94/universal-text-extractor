@@ -23,6 +23,9 @@ COPY app.py /app/
 COPY utils/ /app/utils/
 COPY .streamlit/ /app/.streamlit/
 
+# Set permissions for SQLite database directory
+RUN chmod 777 /app/data
+
 # Install Python dependencies
 RUN pip install --no-cache-dir \
     streamlit>=1.27.0 \
