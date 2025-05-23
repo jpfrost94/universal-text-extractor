@@ -55,6 +55,19 @@ def init_database():
     )
     ''')
     
+    # Create user_feedback table
+    conn.execute('''
+    CREATE TABLE IF NOT EXISTS user_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        feedback_type TEXT NOT NULL,
+        feedback_text TEXT NOT NULL,
+        rating INTEGER NOT NULL,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (username) REFERENCES users(username)
+    )
+    ''')
+    
     # Create file_type_stats table
     conn.execute('''
     CREATE TABLE IF NOT EXISTS file_type_stats (
