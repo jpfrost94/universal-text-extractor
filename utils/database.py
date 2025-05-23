@@ -341,60 +341,114 @@ def log_extraction_event(
     except Exception as e:
         print(f"Error logging extraction event: {e}")
 
-def get_analytics_summary():
+def get_analytics_summary(username=None):
     """
     Get a summary of usage statistics for display
     
+    Args:
+        username: Optional username to filter statistics for a specific user
+        
     Returns:
         Dictionary with summary statistics
     """
     try:
         conn = get_db_connection()
         
+        # Base query parts
+        base_query = "FROM extraction_logs"
+        params = tuple()
+        
+        # Add user filter if specified
+        if username:
+            base_query += " WHERE user_id = ?"
+            params = (username,)
+        
         # Get total files processed
-        cursor = conn.execute("SELECT COUNT(*) as count FROM extraction_logs")
+        cursor = conn.execute(f"SELECT COUNT(*) as count {base_query}", params)
         total_files = cursor.fetchone()['count']
         
         # Get successful extractions
-        cursor = conn.execute("SELECT COUNT(*) as count FROM extraction_logs WHERE success = 1")
+        success_query = f"{base_query} AND success = 1" if username else f"{base_query} WHERE success = 1"
+        cursor = conn.execute(f"SELECT COUNT(*) as count {success_query}", params)
         successful = cursor.fetchone()['count']
         
         # Get OCR usage
-        cursor = conn.execute("SELECT COUNT(*) as count FROM extraction_logs WHERE ocr_used = 1")
+        ocr_query = f"{base_query} AND ocr_used = 1" if username else f"{base_query} WHERE ocr_used = 1"
+        cursor = conn.execute(f"SELECT COUNT(*) as count {ocr_query}", params)
         ocr_usage = cursor.fetchone()['count']
         
         # Get average processing time
-        cursor = conn.execute("SELECT AVG(processing_time) as avg_time FROM extraction_logs")
+        cursor = conn.execute(f"SELECT AVG(processing_time) as avg_time {base_query}", params)
         avg_time = cursor.fetchone()['avg_time'] or 0
         
         # Get top file types
-        cursor = conn.execute("SELECT file_type, count FROM file_type_stats ORDER BY count DESC LIMIT 5")
+        if username:
+            cursor = conn.execute(f"""
+                SELECT file_type, COUNT(*) as count 
+                {base_query}
+                GROUP BY file_type 
+                ORDER BY count DESC 
+                LIMIT 5
+            """, params)
+        else:
+            cursor = conn.execute("SELECT file_type, count FROM file_type_stats ORDER BY count DESC LIMIT 5")
+            
         top_file_types = [(row['file_type'], row['count']) for row in cursor.fetchall()]
         
         # Get file size distribution
-        cursor = conn.execute("SELECT size_range, count FROM file_size_stats")
-        file_sizes = {row['size_range']: row['count'] for row in cursor.fetchall()}
+        if username:
+            cursor = conn.execute(f"""
+                SELECT 
+                    CASE 
+                        WHEN file_size_bytes <= 1048576 THEN '0-1MB'
+                        WHEN file_size_bytes <= 5242880 THEN '1-5MB'
+                        WHEN file_size_bytes <= 10485760 THEN '5-10MB'
+                        ELSE '10MB+'
+                    END as size_range,
+                    COUNT(*) as count
+                {base_query}
+                GROUP BY size_range
+            """, params)
+            file_sizes = {row['size_range']: row['count'] for row in cursor.fetchall()}
+        else:
+            cursor = conn.execute("SELECT size_range, count FROM file_size_stats")
+            file_sizes = {row['size_range']: row['count'] for row in cursor.fetchall()}
         
-        # Get top users
-        cursor = conn.execute("""
-            SELECT user_id, COUNT(*) as count 
-            FROM extraction_logs 
-            GROUP BY user_id 
-            ORDER BY count DESC 
-            LIMIT 5
-        """)
-        top_users = [(row['user_id'], row['count']) for row in cursor.fetchall()]
+        # Get top users (only for admin view)
+        top_users = []
+        if not username:
+            cursor = conn.execute("""
+                SELECT user_id, COUNT(*) as count 
+                FROM extraction_logs 
+                GROUP BY user_id 
+                ORDER BY count DESC 
+                LIMIT 5
+            """)
+            top_users = [(row['user_id'], row['count']) for row in cursor.fetchall()]
         
-        # Get usage over time (last 7 days)
+        # Get usage over time (last 30 days)
         today = datetime.date.today()
-        last_week = [(today - datetime.timedelta(days=i)).isoformat() for i in range(7)]
-        last_week.reverse()  # Oldest first
+        last_month = [(today - datetime.timedelta(days=i)).isoformat() for i in range(30)]
+        last_month.reverse()  # Oldest first
         
-        usage_trend = []
-        for day in last_week:
-            cursor = conn.execute("SELECT total FROM daily_stats WHERE date = ?", (day,))
-            row = cursor.fetchone()
-            usage_trend.append(row['total'] if row else 0)
+        usage_trend_days = last_month
+        usage_trend_counts = []
+        
+        for day in last_month:
+            if username:
+                day_start = f"{day} 00:00:00"
+                day_end = f"{day} 23:59:59"
+                cursor = conn.execute(f"""
+                    SELECT COUNT(*) as count 
+                    FROM extraction_logs 
+                    WHERE user_id = ? AND timestamp BETWEEN ? AND ?
+                """, (username, day_start, day_end))
+                row = cursor.fetchone()
+                usage_trend_counts.append(row['count'] if row else 0)
+            else:
+                cursor = conn.execute("SELECT total FROM daily_stats WHERE date = ?", (day,))
+                row = cursor.fetchone()
+                usage_trend_counts.append(row['total'] if row else 0)
         
         conn.close()
         
@@ -402,25 +456,35 @@ def get_analytics_summary():
         successful_rate = (successful / total_files * 100) if total_files > 0 else 0
         ocr_usage_rate = (ocr_usage / total_files * 100) if total_files > 0 else 0
         
-        # Prepare summary
-        summary = {
-            "total_files_processed": total_files,
-            "successful_extractions": successful,
-            "successful_rate": successful_rate,
-            "ocr_usage": ocr_usage,
-            "ocr_usage_rate": ocr_usage_rate,
-            "avg_processing_time": avg_time,
+        # Return the analytics summary
+        return {
+            "total_processed": total_files,
+            "success_rate": round(successful_rate, 1),
+            "ocr_usage": round(ocr_usage_rate, 1),
+            "avg_processing_time": round(avg_time, 2),
             "top_file_types": top_file_types,
             "file_sizes": file_sizes,
-            "top_users": top_users,
             "usage_trend": {
-                "days": last_week,
-                "counts": usage_trend
-            }
+                "days": usage_trend_days,
+                "counts": usage_trend_counts
+            },
+            "top_users": top_users
         }
-        
-        return summary
-        
+    except Exception as e:
+        print(f"Error getting analytics summary: {e}")
+        return {
+            "total_processed": 0,
+            "success_rate": 0,
+            "ocr_usage": 0,
+            "avg_processing_time": 0,
+            "top_file_types": [],
+            "file_sizes": {},
+            "usage_trend": {
+                "days": [],
+                "counts": []
+            },
+            "top_users": []
+        }
     except Exception as e:
         print(f"Error getting analytics summary: {e}")
         return {
@@ -560,6 +624,186 @@ def get_user_feedback(username=None):
     except Exception as e:
         print(f"Error retrieving feedback: {e}")
         return []
+
+# Data retention features
+def get_data_older_than(days, data_type="extraction_logs"):
+    """
+    Get data that is older than the specified number of days
+    
+    Args:
+        days: Number of days
+        data_type: Type of data ('extraction_logs' or 'user_feedback')
+        
+    Returns:
+        List of data rows
+    """
+    try:
+        conn = get_db_connection()
+        
+        # Calculate the cutoff date
+        cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        if data_type == "extraction_logs":
+            cursor = conn.execute(
+                "SELECT * FROM extraction_logs WHERE timestamp < ?",
+                (cutoff_date,)
+            )
+        elif data_type == "user_feedback":
+            cursor = conn.execute(
+                "SELECT * FROM user_feedback WHERE timestamp < ?",
+                (cutoff_date,)
+            )
+        else:
+            conn.close()
+            return []
+        
+        # Convert rows to dictionaries
+        result = []
+        for row in cursor.fetchall():
+            result.append(dict(row))
+        
+        conn.close()
+        return result
+    except Exception as e:
+        print(f"Error getting data older than {days} days: {e}")
+        return []
+
+def cleanup_old_data(days, data_type="extraction_logs"):
+    """
+    Remove data that is older than the specified number of days
+    
+    Args:
+        days: Number of days
+        data_type: Type of data ('extraction_logs' or 'user_feedback')
+        
+    Returns:
+        Number of rows deleted
+    """
+    try:
+        conn = get_db_connection()
+        
+        # Calculate the cutoff date
+        cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        if data_type == "extraction_logs":
+            cursor = conn.execute(
+                "DELETE FROM extraction_logs WHERE timestamp < ?",
+                (cutoff_date,)
+            )
+        elif data_type == "user_feedback":
+            cursor = conn.execute(
+                "DELETE FROM user_feedback WHERE timestamp < ?",
+                (cutoff_date,)
+            )
+        else:
+            conn.close()
+            return 0
+        
+        rows_deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return rows_deleted
+    except Exception as e:
+        print(f"Error cleaning up data older than {days} days: {e}")
+        return 0
+
+def export_user_data(username, format_type="json", data_types=None):
+    """
+    Export user data in the specified format
+    
+    Args:
+        username: Username of the user
+        format_type: Export format ('json', 'csv', 'txt')
+        data_types: List of data types to export ('extraction_logs', 'feedback', 'all')
+        
+    Returns:
+        Dictionary with exported data in the specified format(s)
+    """
+    if data_types is None:
+        data_types = ["all"]
+    
+    try:
+        conn = get_db_connection()
+        result = {"username": username, "export_date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        
+        # Get extraction logs
+        if "all" in data_types or "extraction_logs" in data_types:
+            cursor = conn.execute(
+                "SELECT * FROM extraction_logs WHERE user_id = ? ORDER BY timestamp DESC",
+                (username,)
+            )
+            extraction_logs = []
+            for row in cursor.fetchall():
+                extraction_logs.append(dict(row))
+            result["extraction_logs"] = extraction_logs
+        
+        # Get user feedback
+        if "all" in data_types or "feedback" in data_types:
+            cursor = conn.execute(
+                "SELECT * FROM user_feedback WHERE username = ? ORDER BY timestamp DESC",
+                (username,)
+            )
+            feedback = []
+            for row in cursor.fetchall():
+                feedback.append(dict(row))
+            result["feedback"] = feedback
+        
+        conn.close()
+        
+        # Format the result according to the specified format
+        if format_type == "json":
+            import json
+            return json.dumps(result, indent=2, default=str)
+        elif format_type == "csv":
+            import csv
+            import io
+            
+            output = io.StringIO()
+            if "all" in data_types or "extraction_logs" in data_types:
+                if result.get("extraction_logs"):
+                    output.write("EXTRACTION LOGS\n")
+                    writer = csv.DictWriter(output, fieldnames=result["extraction_logs"][0].keys())
+                    writer.writeheader()
+                    writer.writerows(result["extraction_logs"])
+                    output.write("\n")
+            
+            if "all" in data_types or "feedback" in data_types:
+                if result.get("feedback"):
+                    output.write("USER FEEDBACK\n")
+                    writer = csv.DictWriter(output, fieldnames=result["feedback"][0].keys())
+                    writer.writeheader()
+                    writer.writerows(result["feedback"])
+            
+            return output.getvalue()
+        elif format_type == "txt":
+            output = []
+            output.append(f"Data Export for User: {username}")
+            output.append(f"Date: {result['export_date']}")
+            output.append("")
+            
+            if "all" in data_types or "extraction_logs" in data_types:
+                if result.get("extraction_logs"):
+                    output.append("=== EXTRACTION LOGS ===")
+                    for log in result["extraction_logs"]:
+                        output.append("-" * 40)
+                        for key, value in log.items():
+                            output.append(f"{key}: {value}")
+                    output.append("")
+            
+            if "all" in data_types or "feedback" in data_types:
+                if result.get("feedback"):
+                    output.append("=== USER FEEDBACK ===")
+                    for fb in result["feedback"]:
+                        output.append("-" * 40)
+                        for key, value in fb.items():
+                            output.append(f"{key}: {value}")
+            
+            return "\n".join(output)
+        else:
+            return "Unsupported export format"
+    except Exception as e:
+        print(f"Error exporting user data: {e}")
+        return f"Error exporting data: {str(e)}"
 
 # Initialize the database
 init_database()
