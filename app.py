@@ -17,7 +17,7 @@ from utils.database import (
 )
 from utils.auth_db import (
     authenticate_user, is_admin, add_user, change_password,
-    initialize_users, ROLE_ADMIN
+    initialize_users, ROLE_ADMIN, ROLE_USER
 )
 
 # Page configuration
@@ -83,21 +83,63 @@ def format_file_types():
 # Login function
 def login():
     st.sidebar.title("Login")
-    username = st.sidebar.text_input("Username")
-    password = st.sidebar.text_input("Password", type="password")
+    username = st.sidebar.text_input("Username", key="login_username")
+    password = st.sidebar.text_input("Password", type="password", key="login_password")
     
-    if st.sidebar.button("Login"):
-        user = authenticate_user(username, password)
-        if user:
-            st.session_state.authenticated = True
-            st.session_state.username = username
-            st.session_state.is_admin = is_admin(username)
-            st.sidebar.success(f"Logged in as {username}")
-            
-            # Force page reload to update UI
+    col1, col2 = st.sidebar.columns(2)
+    
+    with col1:
+        if st.button("Login", key="login_button"):
+            user = authenticate_user(username, password)
+            if user:
+                st.session_state.authenticated = True
+                st.session_state.username = username
+                st.session_state.is_admin = is_admin(username)
+                st.sidebar.success(f"Logged in as {username}")
+                
+                # Force page reload to update UI
+                st.rerun()
+            else:
+                st.sidebar.error("Invalid username or password")
+    
+    with col2:
+        if st.button("Register", key="show_register_button"):
+            st.session_state.show_registration = True
             st.rerun()
-        else:
-            st.sidebar.error("Invalid username or password")
+
+# Registration function
+def register():
+    st.sidebar.title("Register New Account")
+    
+    username = st.sidebar.text_input("Choose Username", key="reg_username")
+    password = st.sidebar.text_input("Choose Password", type="password", key="reg_password")
+    confirm_password = st.sidebar.text_input("Confirm Password", type="password", key="reg_confirm")
+    
+    col1, col2 = st.sidebar.columns(2)
+    
+    with col1:
+        if st.button("Create Account", key="register_button"):
+            # Validate inputs
+            if not username or not password:
+                st.sidebar.error("Username and password are required")
+            elif password != confirm_password:
+                st.sidebar.error("Passwords do not match")
+            elif len(password) < 6:
+                st.sidebar.error("Password must be at least 6 characters")
+            else:
+                # Attempt to create the account
+                if add_user(username, password, ROLE_USER):
+                    st.sidebar.success(f"Account created for {username}. You can now log in.")
+                    # Reset the registration flag and return to login
+                    st.session_state.show_registration = False
+                    st.rerun()
+                else:
+                    st.sidebar.error(f"Username '{username}' already exists")
+    
+    with col2:
+        if st.button("Back to Login", key="back_to_login_button"):
+            st.session_state.show_registration = False
+            st.rerun()
 
 # Logout function
 def logout():
@@ -108,6 +150,10 @@ def logout():
         
         # Force page reload to update UI
         st.rerun()
+
+# Initialize registration state if needed
+if 'show_registration' not in st.session_state:
+    st.session_state.show_registration = False
 
 # Sidebar
 with st.sidebar:
@@ -122,11 +168,17 @@ with st.sidebar:
             st.write("Role: **User**")
         logout()
     else:
-        login()
+        if st.session_state.show_registration:
+            register()
+        else:
+            login()
     
-    # Navigation - restrict access to statistics for admins only
-    if st.session_state.authenticated and st.session_state.is_admin:
-        page = st.radio("Navigation", ["Text Extraction", "Usage Statistics"])
+    # Navigation
+    if st.session_state.authenticated:
+        if st.session_state.is_admin:
+            page = st.radio("Navigation", ["Text Extraction", "Usage Statistics", "Admin Panel"])
+        else:
+            page = st.radio("Navigation", ["Text Extraction", "My Statistics", "Feedback"])
     else:
         page = "Text Extraction"
     
@@ -163,6 +215,10 @@ with st.sidebar:
         
         For issues or questions, please contact your IT department.
         """)
+
+# Define user feedback storage if it doesn't exist
+if 'user_feedback' not in st.session_state:
+    st.session_state.user_feedback = {}
 
 # Main content based on selected page
 if page == "Text Extraction":
