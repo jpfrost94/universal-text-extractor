@@ -27,10 +27,18 @@ def initialize_users():
     Initialize users file if it doesn't exist with default admin account
     """
     if not os.path.exists(USERS_FILE):
+        # Generate a secure random password for the default admin
+        initial_password = generate_secure_password()
+        
+        # Display the generated password (in a real system, this would be securely
+        # communicated to the administrator via a secure channel)
+        print(f"IMPORTANT: Initial admin password generated: {initial_password}")
+        print("Please save this password and change it immediately after first login.")
+        
         # Create with default admin account
         default_admin = {
             "username": DEFAULT_ADMIN_USERNAME,
-            "password_hash": hash_password(DEFAULT_ADMIN_PASSWORD),
+            "password_hash": hash_password(initial_password),
             "role": ROLE_ADMIN,
             "created_at": time.time(),
             "require_password_change": True  # Force password change on first login
