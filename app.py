@@ -367,8 +367,10 @@ else:
     threshold_value = 128
     noise_reduction = False
 
-# Process Button
-process_clicked = st.button("Process Document", type="primary", use_container_width=True)
+# Process Button (only show on Text Extraction page)
+process_clicked = False
+if page == "Text Extraction":
+    process_clicked = st.button("Process Document", type="primary", use_container_width=True)
 
 # Process the file when button is clicked
 if process_clicked and 'uploaded_file' in locals() and uploaded_file is not None:
