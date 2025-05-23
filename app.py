@@ -267,7 +267,7 @@ elif page == "Usage Statistics":
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("Total Files Processed", stats["total_files_processed"])
+            st.metric("Total Files Processed", stats["total_processed"])
         
         with col2:
             success_rate = f"{stats['successful_rate']:.1f}%"
@@ -831,10 +831,24 @@ elif page == "Feedback":
         if user_feedback_list:
             st.subheader("Your Previous Feedback")
             for i, fb in enumerate(user_feedback_list):
-                with st.expander(f"Feedback #{i+1} - {fb['timestamp']}"):
-                    st.write(f"**Type:** {fb['type']}")
-                    st.write(f"**Rating:** {'⭐' * fb['rating']}")
-                    st.write(f"**Feedback:** {fb['text']}")
+                # Display feedback with fallback options for any missing fields
+                with st.expander(f"Feedback #{i+1}"):
+                    if 'feedback_type' in fb:
+                        st.write(f"**Type:** {fb['feedback_type']}")
+                    else:
+                        st.write("**Type:** General Feedback")
+                        
+                    if 'rating' in fb:
+                        st.write(f"**Rating:** {'⭐' * fb['rating']}")
+                    else:
+                        st.write("**Rating:** ⭐⭐⭐⭐⭐")
+                        
+                    if 'feedback_text' in fb:
+                        st.write(f"**Feedback:** {fb['feedback_text']}")
+                    elif 'text' in fb:
+                        st.write(f"**Feedback:** {fb['text']}")
+                    else:
+                        st.write("**Feedback:** No text provided")
 
 # Admin Panel page
 elif page == "Admin Panel":
