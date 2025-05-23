@@ -15,7 +15,8 @@ from utils.database import (
     get_analytics_summary, log_extraction_event, reset_analytics,
     get_user_by_username as db_get_user
 )
-from utils.data_management import (
+# We now have data management functions directly in the database module
+from utils.database import (
     get_data_older_than, cleanup_old_data, export_user_data
 )
 from utils.auth_db import (
