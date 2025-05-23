@@ -344,24 +344,7 @@ elif page == "Usage Statistics":
                     mime="text/csv"
                 )
         
-        # User Management section
-        st.subheader("User Management")
-        
-        # Add new user form
-        with st.expander("Add New User", expanded=False):
-            new_username = st.text_input("New Username", key="new_username")
-            new_password = st.text_input("New Password", type="password", key="new_password")
-            is_new_admin = st.checkbox("Admin Access", value=False, key="is_new_admin")
-            
-            if st.button("Add User"):
-                if new_username and new_password:
-                    role = ROLE_ADMIN if is_new_admin else "user"
-                    if add_user(new_username, new_password, role):
-                        st.success(f"User '{new_username}' added successfully.")
-                    else:
-                        st.error(f"User '{new_username}' already exists.")
-                else:
-                    st.warning("Username and password are required.")
+
 else:
     # File uploader (fallback if the navigation somehow fails)
     uploaded_file = st.file_uploader(
