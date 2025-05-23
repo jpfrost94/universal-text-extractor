@@ -497,6 +497,70 @@ def export_analytics_to_csv():
         print(f"Error exporting analytics to CSV: {e}")
         return "Error generating CSV export"
 
+def save_user_feedback(username, feedback_type, feedback_text, rating):
+    """
+    Save user feedback to the database
+    
+    Args:
+        username: Username of the user providing feedback
+        feedback_type: Type of feedback (e.g., 'bug', 'feature', 'general')
+        feedback_text: The actual feedback text
+        rating: Numeric rating (e.g., 1-5)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = get_db_connection()
+        conn.execute(
+            "INSERT INTO user_feedback (username, feedback_type, feedback_text, rating) VALUES (?, ?, ?, ?)",
+            (username, feedback_type, feedback_text, rating)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error saving feedback: {e}")
+        return False
+
+def get_user_feedback(username=None):
+    """
+    Get user feedback from the database
+    
+    Args:
+        username: Optional username to filter by. If None, returns all feedback.
+        
+    Returns:
+        List of feedback dictionaries
+    """
+    try:
+        conn = get_db_connection()
+        
+        if username:
+            cursor = conn.execute(
+                "SELECT * FROM user_feedback WHERE username = ? ORDER BY timestamp DESC",
+                (username,)
+            )
+        else:
+            cursor = conn.execute("SELECT * FROM user_feedback ORDER BY timestamp DESC")
+            
+        feedback_list = []
+        for row in cursor.fetchall():
+            feedback_list.append({
+                "id": row["id"],
+                "username": row["username"],
+                "type": row["feedback_type"],
+                "text": row["feedback_text"],
+                "rating": row["rating"],
+                "timestamp": row["timestamp"]
+            })
+            
+        conn.close()
+        return feedback_list
+    except Exception as e:
+        print(f"Error retrieving feedback: {e}")
+        return []
+
 # Initialize the database
 init_database()
 

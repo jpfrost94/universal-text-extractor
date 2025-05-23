@@ -688,6 +688,9 @@ elif page == "Feedback":
     if st.session_state.authenticated and not st.session_state.is_admin:
         st.title("Provide Feedback")
         
+        # Get the current username
+        current_username = st.session_state.username
+        
         # Feedback form
         with st.form("feedback_form"):
             st.write("We value your feedback on the Text Extraction Tool")
@@ -714,26 +717,22 @@ elif page == "Feedback":
             submit_button = st.form_submit_button("Submit Feedback")
             
             if submit_button and feedback_text:
-                # Store feedback in session state for now
-                # In a real implementation, this would be saved to a database
-                if username not in st.session_state.user_feedback:
-                    st.session_state.user_feedback[username] = []
-                
-                st.session_state.user_feedback[username].append({
-                    "type": feedback_type,
-                    "text": feedback_text,
-                    "rating": rating,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-                
-                st.success("Thank you for your feedback! We'll use it to improve the tool.")
+                # Save feedback to the database
+                from utils.database import save_user_feedback
+                if save_user_feedback(current_username, feedback_type, feedback_text, rating):
+                    st.success("Thank you for your feedback! We'll use it to improve the tool.")
+                else:
+                    st.error("There was a problem saving your feedback. Please try again.")
             elif submit_button:
                 st.warning("Please provide your feedback before submitting.")
         
         # Display previous feedback from this user
-        if username in st.session_state.user_feedback and st.session_state.user_feedback[username]:
+        from utils.database import get_user_feedback
+        user_feedback_list = get_user_feedback(current_username)
+        
+        if user_feedback_list:
             st.subheader("Your Previous Feedback")
-            for i, fb in enumerate(st.session_state.user_feedback[username]):
+            for i, fb in enumerate(user_feedback_list):
                 with st.expander(f"Feedback #{i+1} - {fb['timestamp']}"):
                     st.write(f"**Type:** {fb['type']}")
                     st.write(f"**Rating:** {'⭐' * fb['rating']}")
@@ -768,10 +767,22 @@ elif page == "Admin Panel":
         with admin_tabs[1]:
             st.subheader("User Feedback")
             
-            # Display all feedback from users
-            if st.session_state.user_feedback:
-                for user, feedbacks in st.session_state.user_feedback.items():
-                    st.subheader(f"Feedback from {user}")
+            # Display all feedback from users using the database
+            from utils.database import get_user_feedback
+            all_feedback = get_user_feedback()
+            
+            if all_feedback:
+                # Group feedback by username
+                feedback_by_user = {}
+                for fb in all_feedback:
+                    username = fb['username']
+                    if username not in feedback_by_user:
+                        feedback_by_user[username] = []
+                    feedback_by_user[username].append(fb)
+                
+                # Display feedback grouped by user
+                for username, feedbacks in feedback_by_user.items():
+                    st.subheader(f"Feedback from {username}")
                     for i, fb in enumerate(feedbacks):
                         with st.expander(f"{fb['type']} - {fb['timestamp']}"):
                             st.write(f"**Rating:** {'⭐' * fb['rating']}")
