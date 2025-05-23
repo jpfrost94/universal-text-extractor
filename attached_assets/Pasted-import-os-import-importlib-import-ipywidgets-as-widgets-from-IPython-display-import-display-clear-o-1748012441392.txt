@@ -1,0 +1,1925 @@
+import os
+import importlib
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+import csv
+import json
+import xml.etree.ElementTree as ET
+import email # For .eml processing
+import re
+import datetime
+
+# Attempt to import potentially needed libraries to check availability later if needed
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+try:
+    import fitz # PyMuPDF
+except ImportError:
+    fitz = None
+try:
+    import PyPDF2
+except ImportError:
+    PyPDF2 = None
+try:
+    from pdf2image import convert_from_path
+except ImportError:
+    convert_from_path = None
+try:
+    import pytesseract
+except ImportError:
+    pytesseract = None
+
+# Add this new part
+try:
+    import easyocr
+    has_easyocr = True
+    print("easyocr is available and ready.")
+except ImportError:
+    easyocr = None
+    has_easyocr = False
+    print("easyocr is not installed or failed to import.")
+
+try:
+    from PIL import Image, ImageOps, ImageFilter, ImageEnhance, ImageStat
+except ImportError:
+    Image, ImageOps, ImageFilter, ImageEnhance, ImageStat = None, None, None, None, None
+# --- NEW DEPENDENCY FOR HEIC/HEIF ---
+try:
+    import pillow_heif
+    # pillow_heif.register_heif_opener() # Often registers itself on import
+    has_heif_support = True
+    print("HEIC/HEIF support enabled via pillow-heif.")
+except ImportError:
+    pillow_heif = None
+    has_heif_support = False
+    print("pillow-heif not installed. HEIC/HEIF support will be unavailable.")
+# --- END NEW DEPENDENCY ---
+try:
+    # Optional: OpenCV for advanced image processing
+    import cv2
+    import numpy as np
+    has_opencv = True
+except ImportError:
+    has_opencv = False
+try:
+    import docx2txt
+except ImportError:
+    docx2txt = None
+try:
+    from docx import Document
+except ImportError:
+    Document = None
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+try:
+    from striprtf.striprtf import rtf_to_text
+except ImportError:
+    rtf_to_text = None
+try:
+    from odf import text as odf_text, teletype as odf_teletype
+    from odf.opendocument import load as odf_load
+    from odf.table import Table, TableRow, TableCell # For ODS specific extraction
+except ImportError:
+    odf_text, odf_teletype, odf_load, Table, TableRow, TableCell = None, None, None, None, None
+try:
+    import ebooklib
+    from ebooklib import epub
+except ImportError:
+    ebooklib, epub = None, None
+try:
+    import extract_msg
+except ImportError:
+    extract_msg = None
+
+# Add this near the top of your script
+OCR_ENABLED = True  # Set to False to disable OCR attempts completely
+
+# Add this near the top of your script
+VERBOSE_MODE = False  # Set to False to reduce output in production
+
+# Near the beginning of your script
+# Check for bundled language files
+bundled_tessdata_path = os.path.join(os.getcwd(), "tessdata")
+if os.path.exists(bundled_tessdata_path) and pytesseract:
+    # Set TESSDATA_PREFIX environment variable
+    os.environ["TESSDATA_PREFIX"] = bundled_tessdata_path
+    print(f"Using bundled Tesseract language files from: {bundled_tessdata_path}")
+
+def check_tesseract_language_files(lang="eng"):
+    """
+    Check if Tesseract language files are available and properly set up
+
+    Args:
+        lang: Language code to check
+
+    Returns:
+        Boolean indicating if language files are available
+    """
+    if not pytesseract:
+        return False
+
+    try:
+        # Try a simple OCR with the specified language
+        if Image:
+            test_img = Image.new('RGB', (100, 30), color=(255, 255, 255))
+            pytesseract.image_to_string(test_img, config=f'-l {lang} --oem 1')
+            return True
+        return False # Pillow not available
+    except Exception as e:
+        error_str = str(e)
+        if "Failed loading language" in error_str:
+            print(f"Tesseract language file for '{lang}' is missing or incomplete.")
+            print(f"Error: {e}")
+            print("\nTesseract is installed but language data is missing.")
+            print("In a secure environment, you may need to:")
+            print("1. Request the language data files (*.traineddata) from your system administrator")
+            print("2. Have them placed in the Tesseract tessdata directory")
+            print(f"   (Typically: /usr/share/tesseract-ocr/4.00/tessdata/ or similar for Linux)")
+            print(f"   (Or within the Tesseract installation directory for Windows, e.g., C:\\Program Files\\Tesseract-OCR\\tessdata)")
+        elif "Error opening data file" in error_str: # Another common error message
+            print(f"Tesseract could not find/open the language data file for '{lang}'.")
+            print(f"Error: {e}")
+            print(f"Ensure TESSDATA_PREFIX is set correctly or language files are in the default Tesseract path.")
+        else:
+            print(f"Tesseract test OCR failed for language '{lang}': {e}")
+        return False
+
+
+# Try to set Tesseract path if it's not in the system PATH
+if pytesseract:
+    try:
+        # Check if Tesseract works with default settings
+        pytesseract.get_tesseract_version()
+    except pytesseract.TesseractNotFoundError:
+        print("Tesseract command not found in PATH.")
+        # Try common installation paths
+        possible_paths = [
+            '/usr/bin/tesseract',
+            '/usr/local/bin/tesseract',
+            '/opt/homebrew/bin/tesseract', # macOS Homebrew
+            'C:\\Program Files\\Tesseract-OCR\\tesseract.exe',
+            'C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe',
+        ]
+        found_tesseract_path = False
+        for path in possible_paths:
+            if os.path.exists(path):
+                print(f"Setting Tesseract path to: {path}")
+                pytesseract.pytesseract.tesseract_cmd = path
+                found_tesseract_path = True
+                break
+        if not found_tesseract_path:
+            print("Could not automatically find Tesseract executable. Please ensure it's installed and in your PATH, or set the path manually.")
+    except Exception as e:
+        print(f"An error occurred while trying to configure Tesseract path: {e}")
+
+
+# Check if Tesseract is actually working
+tesseract_working = False
+if pytesseract and Image: # Image is needed for test
+    try:
+        version = pytesseract.get_tesseract_version()
+        print(f"Tesseract OCR is available (version: {version})")
+
+        # Check language files (e.g., for English)
+        has_language_files = check_tesseract_language_files(lang="eng")
+
+        if has_language_files:
+            print("Tesseract language files (eng) seem to be available and working.")
+            tesseract_working = True
+        else:
+            print("Tesseract language files (eng) are missing or not working correctly. OCR functionality will be limited.")
+            # Attempt to list available languages as a diagnostic
+            try:
+                available_langs = pytesseract.get_languages(config='')
+                print(f"Available Tesseract languages: {available_langs}")
+                if not available_langs:
+                    print("No languages found. Tesseract 'tessdata' directory might be missing or incorrectly configured.")
+            except Exception as lang_e:
+                print(f"Could not retrieve available Tesseract languages: {lang_e}")
+
+    except pytesseract.TesseractNotFoundError:
+        print("Tesseract OCR executable not found. Please install Tesseract and ensure it's in your system PATH.")
+        print("Image and scanned PDF processing will be limited.")
+    except Exception as e:
+        print(f"Tesseract OCR is installed but not working correctly: {e}")
+        print("Image and scanned PDF processing will be limited.")
+else:
+    if not pytesseract:
+        print("Pytesseract library not found. Install it with 'pip install pytesseract'.")
+    if not Image:
+        print("Pillow (PIL) library not found. Install it with 'pip install Pillow'.")
+    print("Tesseract OCR is not available. Image and scanned PDF processing will be limited.")
+
+
+# Check if pdf2image/Poppler is working
+poppler_working = False
+if convert_from_path:
+    try:
+        # A more reliable check for Poppler without actually converting a PDF
+        # Try to get Poppler version info if possible, or a simpler check
+        # This is tricky as pdf2image doesn't expose a Poppler check directly
+        # We can assume it might work if the import succeeded and Tesseract is not the only PDF OCR path
+        # A lightweight test could be to try pdfinfo_from_path on a dummy/non-existent path
+        # to see if it fails due to Poppler or file not found.
+        from pdf2image.exceptions import PDFInfoNotInstalledError
+        try:
+            # This will likely fail with FileNotFoundError if Poppler is installed,
+            # or PDFInfoNotInstalledError if Poppler is missing.
+            pdfinfo = convert_from_path.__globals__.get('pdfinfo_from_path')
+            if pdfinfo:
+                 pdfinfo("dummy_non_existent.pdf", poppler_path=None) # Intentionally try non-existent
+        except PDFInfoNotInstalledError:
+            print("Poppler utilities (pdftoppm/pdfinfo) not found. PDF to image conversion will fail.")
+            print("Please install Poppler and add it to your PATH.")
+            poppler_working = False
+        except FileNotFoundError: # This is expected if Poppler is installed but file is missing
+            print("Poppler utilities for PDF image extraction appear to be available.")
+            poppler_working = True
+        except Exception as e: # Catch other errors
+            print(f"Checking Poppler utilities failed unexpectedly: {e}. Assuming not available.")
+            poppler_working = False
+
+    except Exception as e:
+        print(f"Poppler utilities for PDF image extraction are likely not working or pdf2image has issues: {e}")
+else:
+    print("pdf2image library not installed. PDF to image conversion for OCR will be unavailable.")
+
+def is_tesseract_working():
+    """
+    Check if any OCR capability is available (either Tesseract or EasyOCR)
+    Returns:
+        Boolean indicating if any OCR is available
+    """
+    return tesseract_working or has_easyocr
+
+
+def extract_image_without_ocr(img):
+    """
+    Extract basic information about an image when OCR is not available or finds no text.
+    Args:
+        img: PIL Image object
+    Returns:
+        A string with basic image information
+    """
+    if not ImageStat or not Image: # Ensure Pillow components are available
+        return "[Image analysis failed: Pillow library components missing]"
+    try:
+        width, height = img.size
+        mode = img.mode
+        format_info = getattr(img, 'format', 'Unknown')
+
+        # Basic statistics
+        try:
+            img_gray_for_stats = img.convert('L')
+            stats = ImageStat.Stat(img_gray_for_stats)
+            mean_pixel = stats.mean[0]
+            std_dev = stats.stddev[0]
+            median_pixel = stats.median[0]
+            extrema = stats.extrema[0] # (min, max) for grayscale
+            stats_info = [
+                f"Pixel Mean: {mean_pixel:.2f}",
+                f"Pixel Std Dev: {std_dev:.2f}",
+                f"Pixel Median: {median_pixel:.2f}",
+                f"Pixel Range: {extrema[0]} - {extrema[1]}"
+            ]
+        except Exception as e_stat:
+            stats_info = [f"Could not calculate image statistics: {e_stat}"]
+
+
+        text_likelihood = "Unknown (detailed analysis requires OpenCV or more complex PIL operations)"
+        dominant_colors = []
+        has_transparency = 'A' in img.mode
+
+        # Simplified dominant color analysis without OpenCV if possible
+        if not has_opencv:
+            try:
+                # Resize for faster processing and get a palette
+                img_small_for_color = img.copy()
+                img_small_for_color.thumbnail((100,100))
+                # Quantize to a small number of colors to find dominant ones
+                palette_img = img_small_for_color.convert('P', palette=Image.Palette.ADAPTIVE, colors=5)
+                palette = palette_img.getpalette() # Get list of [r,g,b,r,g,b,...]
+                color_counts = palette_img.getcolors() # List of (count, index)
+                
+                if color_counts:
+                    # Sort by count
+                    color_counts.sort(key=lambda x: x[0], reverse=True)
+                    for i in range(min(len(color_counts), 3)): # Top 3 dominant colors
+                        count, index = color_counts[i]
+                        r, g, b = palette[index*3 : index*3+3]
+                        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+                        percentage = (count / (width * height)) * 100 # Approx percentage
+                        dominant_colors.append(f"{hex_color} (~{percentage:.1f}%)")
+            except Exception as e_pil_color:
+                print(f"PIL-based color analysis error: {e_pil_color}")
+                dominant_colors.append("PIL color analysis failed")
+
+        # OpenCV-based color analysis (more robust if available)
+        elif has_opencv:
+            try:
+                img_rgb_cv = img.convert('RGB')
+                img_small_cv = img_rgb_cv.resize((100, 100))
+                img_np_cv = np.array(img_small_cv)
+                pixels_cv = img_np_cv.reshape(-1, 3).astype(np.float32)
+
+                if len(pixels_cv) > 0:
+                    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+                    _, labels_cv, centers_cv = cv2.kmeans(pixels_cv, 3, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+                    centers_cv = centers_cv.astype(np.uint8)
+                    counts_cv = np.bincount(labels_cv.flatten())
+
+                    for i, center_cv in enumerate(centers_cv):
+                        hex_color = f"#{center_cv[0]:02x}{center_cv[1]:02x}{center_cv[2]:02x}"
+                        percentage = counts_cv[i] / len(labels_cv) * 100
+                        dominant_colors.append(f"{hex_color} ({percentage:.1f}%)")
+            except Exception as e_cv_color:
+                print(f"OpenCV color analysis error: {e_cv_color}")
+                dominant_colors.append("OpenCV color analysis failed")
+
+
+        # Text likelihood analysis (simplified without OpenCV)
+        if not has_opencv and std_dev > 20: # Higher std dev might mean more variation (text/graphics)
+            if extrema[1] - extrema[0] > 100: # High contrast range
+                 text_likelihood = "Possible text/graphics (high contrast & variation)"
+            else:
+                 text_likelihood = "Possible graphics (high variation, moderate contrast)"
+        elif extrema[1] - extrema[0] < 50 and std_dev < 15:
+            text_likelihood = "Likely uniform or photographic without sharp text features"
+
+
+        info = [
+            "[IMAGE ANALYSIS (OCR UNAVAILABLE/FAILED)]",
+            f"Dimensions: {width}x{height} pixels",
+            f"Color mode: {mode}{' (has transparency)' if has_transparency else ''}",
+            f"Format: {format_info}",
+        ]
+        info.extend(stats_info)
+
+        if dominant_colors:
+            info.append("Dominant colors (approx): " + ", ".join(dominant_colors))
+
+        info.append(f"Initial Content Assessment: {text_likelihood}")
+
+        if is_tesseract_working():
+            info.append("Note: OCR was attempted but no readable text was found in this image.")
+        else:
+            info.append("Note: OCR is not available or not functioning in this environment.")
+            info.append("Tip: For OCR, ensure Tesseract is installed, in PATH, and has language data (e.g., 'eng.traineddata').")
+
+        return "\n".join(info)
+    except Exception as e:
+        return f"[Could not analyze image: {e}]"
+
+
+def preprocess_white_text_on_black(img, debug_path=None):
+    """
+    Special preprocessing for white text on black backgrounds
+    """
+    results = []
+    if not ImageOps or not ImageEnhance: return results # Pillow components missing
+
+    try:
+        if VERBOSE_MODE: print("Applying specialized white-on-black text processing...")
+        img_rgb = img.convert('RGB') # Work with RGB
+
+        gray = img_rgb.convert('L')
+        results.append(("wob_gray", gray))
+        inverted = ImageOps.invert(gray)
+        results.append(("wob_inverted", inverted)) # Key for OCR
+
+        contrast_enhancer_gray = ImageEnhance.Contrast(gray)
+        high_contrast_gray = contrast_enhancer_gray.enhance(2.0)
+        results.append(("wob_high_contrast_gray", high_contrast_gray))
+
+        contrast_enhancer_inv = ImageEnhance.Contrast(inverted)
+        high_contrast_inv = contrast_enhancer_inv.enhance(2.0)
+        results.append(("wob_high_contrast_inverted", high_contrast_inv)) # Key for OCR
+
+        if has_opencv:
+            img_np = np.array(gray)
+            _, binary = cv2.threshold(img_np, 128, 255, cv2.THRESH_BINARY) # White text becomes white
+            results.append(("wob_cv_binary", Image.fromarray(binary)))
+            results.append(("wob_cv_binary_inverted", Image.fromarray(255 - binary))) # Inverted: Black text on white
+
+            _, otsu = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            results.append(("wob_cv_otsu", Image.fromarray(otsu)))
+            results.append(("wob_cv_otsu_inverted", Image.fromarray(255 - otsu))) # Inverted
+
+    except Exception as e:
+        print(f"Error in white-on-black text preprocessing: {e}")
+
+    if debug_path and results:
+        os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+        base_path = os.path.splitext(debug_path)[0]
+        for name, processed_img in results:
+            processed_img.save(f"{base_path}_wob_{name}.png")
+        if VERBOSE_MODE: print(f"Saved {len(results)} white-on-black debug images with prefix: {base_path}_wob_")
+    return results
+
+def module_available(module_name, attr_name=None):
+    try:
+        module = importlib.import_module(module_name)
+        if attr_name:
+            return getattr(module, attr_name, None)
+        return module
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+def preprocess_white_text_on_transparent(img, debug_path=None):
+    results = []
+    if not Image or not ImageEnhance: return results
+    has_transparency = img.mode == 'RGBA'
+
+    if has_transparency:
+        if VERBOSE_MODE: print("Applying white-text-on-transparent processing...")
+        black_bg = Image.new('RGBA', img.size, (0, 0, 0, 255))
+        composite_on_black = Image.alpha_composite(black_bg, img).convert('RGB')
+        results.append(("wt_transp_on_black_bg", composite_on_black))
+
+        # Now this is like white on black, so invert it for OCR
+        inverted_composite = ImageOps.invert(composite_on_black.convert('L'))
+        results.append(("wt_transp_inverted_on_black", inverted_composite))
+
+        enhancer = ImageEnhance.Contrast(inverted_composite)
+        high_contrast_inverted = enhancer.enhance(2.5)
+        results.append(("wt_transp_high_contrast_inverted", high_contrast_inverted))
+
+        if has_opencv:
+            try:
+                gray_cv = np.array(composite_on_black.convert('L'))
+                _, binary_cv = cv2.threshold(gray_cv, 200, 255, cv2.THRESH_BINARY) # Emphasize white text
+                results.append(("wt_transp_cv_binary", Image.fromarray(binary_cv)))
+                results.append(("wt_transp_cv_binary_inverted", Image.fromarray(255-binary_cv))) # Black text on white
+            except Exception as e:
+                print(f"OpenCV white text on transparent preprocessing failed: {e}")
+
+    if debug_path and results:
+        os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+        base_path = os.path.splitext(debug_path)[0]
+        for name, processed_img in results:
+            processed_img.save(f"{base_path}_{name}.png")
+        if VERBOSE_MODE: print(f"Saved {len(results)} white text on transparent debug images with prefix: {base_path}_")
+    return results
+
+
+def preprocess_image_for_ocr(img, debug_path=None):
+    """
+    Enhanced image preprocessing for OCR with multiple techniques
+
+    Args:
+        img: PIL Image object
+        debug_path: If provided, save debug images to this path
+
+    Returns:
+        List of preprocessed images to try OCR on
+    """
+    results = []
+
+    if not Image or not ImageOps or not ImageFilter:
+        return results
+
+    # Check if image has transparency (RGBA mode)
+    has_transparency = img.mode == 'RGBA'
+
+    # Original grayscale and enhanced grayscale with auto contrast
+    original_l = img.convert('L')
+    results.append(("original_l", original_l))
+
+    # Auto contrast
+    autocontrast_l = ImageOps.autocontrast(original_l, cutoff=0.5)
+    results.append(("autocontrast_l", autocontrast_l))
+
+    # Inverted grayscale & inverted auto contrast images
+    inverted_l = ImageOps.invert(original_l)
+    inverted_autocontrast_l = ImageOps.autocontrast(inverted_l, cutoff=0.5)
+    results.append(("inverted_l", inverted_l))
+    results.append(("inverted_autocontrast_l", inverted_autocontrast_l))
+
+    # Sharpened versions
+    sharp_ac = autocontrast_l.filter(ImageFilter.SHARPEN)
+    results.append(("sharp_ac", sharp_ac))
+
+    sharp_inv_ac = inverted_autocontrast_l.filter(ImageFilter.SHARPEN)
+    results.append(("sharp_inv_ac", sharp_inv_ac))
+
+    # Enhanced contrast versions
+    if ImageEnhance:
+        enhancer_ac = ImageEnhance.Contrast(autocontrast_l)
+        enhanced_ac = enhancer_ac.enhance(2.0)  # Higher contrast boost
+        results.append(("enhanced_contrast_ac", enhanced_ac))
+
+        enhancer_inv_ac = ImageEnhance.Contrast(inverted_autocontrast_l)
+        enhanced_inv_ac = enhancer_inv_ac.enhance(2.0)
+        results.append(("enhanced_contrast_inv_ac", enhanced_inv_ac))
+
+        # Additional enhanced versions
+        stronger_ac = enhancer_ac.enhance(3.0)  # Even stronger enhancement
+        results.append(("stronger_contrast_ac", stronger_ac))
+
+        # Inverted stronger contrast
+        stronger_inv_ac = enhancer_inv_ac.enhance(3.0)
+        results.append(("stronger_contrast_inv_ac", stronger_inv_ac))
+
+    # OpenCV-based preprocessing steps, if available
+    if has_opencv:
+        try:
+            # Convert PIL images to numpy arrays for OpenCV processing
+            img_np_l = np.array(original_l)
+            inverted_np_l = np.array(inverted_l)
+
+            # Adaptive thresholding
+            thresh_adaptive = cv2.adaptiveThreshold(
+                img_np_l, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 11, 2
+            )
+            results.append(("cv_adaptive_thresh", Image.fromarray(thresh_adaptive)))
+
+            inverted_thresh = cv2.adaptiveThreshold(
+                inverted_np_l, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 11, 2
+            )
+            results.append(("cv_adaptive_thresh_inv", Image.fromarray(inverted_thresh)))
+
+            # Otsu's thresholding
+            _, otsu = cv2.threshold(img_np_l, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            results.append(("cv_otsu", Image.fromarray(otsu)))
+
+            _, otsu_inv = cv2.threshold(inverted_np_l, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            results.append(("cv_otsu_inv", Image.fromarray(otsu_inv)))
+
+            # Denoising (careful, might take time based on image size)
+            denoised = cv2.fastNlMeansDenoising(img_np_l, None, 10, 7, 21)
+            results.append(("cv_denoised", Image.fromarray(denoised)))
+
+            inverted_denoised = cv2.fastNlMeansDenoising(inverted_np_l, None, 10, 7, 21)
+            results.append(("cv_denoised_inv", Image.fromarray(inverted_denoised)))
+
+        except Exception as e:
+            print(f"OpenCV preprocessing failed: {e}")
+
+    # Debug mode: Saving intermediate preprocessed images
+    if debug_path:
+        os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+        base_path = os.path.splitext(debug_path)[0]
+        for name, processed_img in results:
+            try:
+                processed_img.save(f"{base_path}_{name}.png")
+            except Exception as e_save:
+                print(f"Could not save debug image {base_path}_{name}.png: {e_save}")
+        if VERBOSE_MODE:
+            print(f"Saved {len(results)} debug images with prefix: {base_path}_")
+
+    return results
+
+def try_multiple_ocr_configs(img, lang="eng"):
+    """
+    Try multiple OCR configurations and select the best result
+
+    Args:
+        img: PIL Image object (preprocessed)
+        lang: Language string for OCR
+
+    Returns:
+        Best OCR text result and confidence score
+    """
+    # First check if any OCR capability is available
+    if not pytesseract and not easyocr:
+        return "", 0
+
+    # Use easyocr if available AND either pytesseract is not available OR tesseract is not working
+    if easyocr and (not pytesseract or not tesseract_working):
+        try:
+            if VERBOSE_MODE: print(f"Using EasyOCR as Tesseract is unavailable or not working")
+            reader = easyocr.Reader([lang], gpu=False)
+            result = reader.readtext(np.array(img))
+            text = " ".join([res[1] for res in result])
+            score = len(text)  # Length of extracted text used for scoring
+            return text, score
+        except Exception as e:
+            print(f"EasyOCR failed: {e}")
+            return "", 0
+
+    # Proceed with Tesseract OCR logic only if it's working
+    if not tesseract_working:
+        return "", 0
+        
+    try:
+        tesseract_version_str = pytesseract.get_tesseract_version()
+
+        # Determine whether to use LSTM based on Tesseract version (4.0+)
+        if hasattr(tesseract_version_str, 'major'):
+            use_lstm = tesseract_version_str.major >= 4
+        else:
+            try:
+                version_num = float(str(tesseract_version_str).split('.')[0])
+                use_lstm = version_num >= 4.0
+            except:
+                print("Could not parse Tesseract version number, assuming 4.0+")
+                use_lstm = True
+
+    except Exception as e:
+        print(f"Could not determine Tesseract version properly: {e}")
+        print("Assuming Tesseract 4.0+ with LSTM engine")
+        use_lstm = True
+
+    # Define configurations to try
+    # These PSM configurations are chosen based on common use cases like screenshots, sparse text etc.
+    psm_options = ['3', '6', '4', '1', '11', '7']  # Auto, block, single column, auto+OSD, sparse, single line
+    configs_to_try = []
+
+    for psm in psm_options:
+        if use_lstm:
+            configs_to_try.append(f'--psm {psm} -l {lang} --oem 1')
+        else: 
+            # Legacy engine for older Tesseract (less likely needed)
+            configs_to_try.append(f'--psm {psm} -l {lang} --oem 0')
+
+    best_text = ""
+    best_score = 0
+
+    for config_str in configs_to_try:
+        try:
+            # Perform OCR with the configured parameters
+            text = pytesseract.image_to_string(img, config=config_str, timeout=15)
+
+            # Scoring: more words, longer words, and more alphanumeric content are good signs
+            words = re.findall(r'\b[a-zA-Z0-9]{2,}\b', text)  # Count words with at least 2 alphanumeric chars
+            char_count = sum(len(w) for w in words)
+            alphanum_text = ''.join(filter(str.isalnum, text))
+
+            # Basic heuristic scoring: Encouraging more words and alphanum content
+            score = len(words) + (char_count / 10.0) + (len(alphanum_text) / 20.0)
+
+            if VERBOSE_MODE:
+                print(f"Config '{config_str}': Score {score:.1f}, Words {len(words)}, Chars {len(alphanum_text)}")
+
+            if score > best_score:
+                best_score = score
+                best_text = text
+
+        except RuntimeError as r_err:
+            print(f"OCR config '{config_str}' failed with runtime error: {r_err}")
+        except Exception as e:
+            print(f"OCR config '{config_str}' failed: {e}")
+
+    return best_text, best_score
+
+def enhanced_structured_document_ocr(img, debug_path=None):
+    # This function remains largely the same but benefits from improved try_multiple_ocr_configs
+    if VERBOSE_MODE: print("Applying specialized processing for structured document...")
+    if not pytesseract or not is_tesseract_working():
+        return None # Fallback to standard OCR if this specialized one cannot run
+
+    # Convert to RGB if needed
+    if img.mode not in ['RGB', 'L']:
+        img = img.convert('RGB')
+
+    width, height = img.size
+    high_res_img = img
+    if width < 2000 or height < 2000: # Only scale up if the image is small
+        scale = min(2000/width, 2000/height, 2.0)
+        if scale > 1.1:
+            new_width, new_height = int(width * scale), int(height * scale)
+            high_res_img = img.resize((new_width, new_height), Image.LANCZOS)
+            if VERBOSE_MODE: print(f"Scaled up for structured document: {width}x{height} -> {new_width}x{new_height}")
+
+    # Try full-page OCR with PSM that allows OSD and layout analysis
+    # PSM 1 (Auto page segmentation with OSD) or PSM 3 (Fully automatic page segmentation, but no OSD)
+    # Tesseract 4+ uses LSTM (--oem 1) by default if available.
+    try:
+        custom_config_psm1 = r'--psm 1 --oem 1 -l eng' # With OSD
+        text_psm1 = pytesseract.image_to_string(high_res_img, config=custom_config_psm1)
+        if len(text_psm1.strip()) > 100: # Arbitrary threshold for "good" extraction
+            if VERBOSE_MODE: print("Successfully extracted structured text with PSM 1.")
+            return text_psm1.strip()
+
+        custom_config_psm3 = r'--psm 3 --oem 1 -l eng' # Auto layout
+        text_psm3 = pytesseract.image_to_string(high_res_img, config=custom_config_psm3)
+        if len(text_psm3.strip()) > 100:
+            if VERBOSE_MODE: print("Successfully extracted structured text with PSM 3.")
+            return text_psm3.strip()
+    except Exception as e:
+        print(f"Full page/column OCR for structured doc failed: {e}")
+
+    # hOCR attempt if BeautifulSoup is available
+    if BeautifulSoup:
+        try:
+            hocr_config = r'--psm 3 --oem 1 -l eng hocr' # Or try other PSMs for hOCR
+            hocr_output = pytesseract.image_to_pdf_or_hocr(high_res_img, extension='hocr', config=hocr_config)
+            soup = BeautifulSoup(hocr_output, 'html.parser')
+            words_with_pos = []
+            # ... (hOCR parsing logic remains the same) ...
+            # (Assuming hOCR parsing logic from original script is here)
+            # This part is complex and depends on correct hOCR output from Tesseract
+            lines_data = [] # Store lines with y-coordinates for sorting
+            for line_elem in soup.find_all(class_='ocr_line'):
+                line_text_parts = []
+                y_coords = []
+                for word_elem in line_elem.find_all(class_='ocrx_word'):
+                    text = word_elem.get_text().strip()
+                    if text:
+                        line_text_parts.append(text)
+                        bbox_match = re.search(r'bbox (\d+) (\d+) (\d+) (\d+)', word_elem['title'])
+                        if bbox_match:
+                            y1 = int(bbox_match.groups()[1])
+                            y_coords.append(y1)
+                if line_text_parts:
+                    avg_y = sum(y_coords) / len(y_coords) if y_coords else 0
+                    lines_data.append({'text': ' '.join(line_text_parts), 'y': avg_y})
+
+            # Sort lines by their average y-coordinate
+            lines_data.sort(key=lambda item: item['y'])
+            structured_text = "\n".join([item['text'] for item in lines_data])
+
+            if structured_text.strip():
+                if VERBOSE_MODE: print("Successfully extracted structured text with hOCR.")
+                return structured_text.strip()
+        except Exception as e:
+            print(f"hOCR processing for structured doc failed: {e}")
+
+    if VERBOSE_MODE: print("Structured document specific OCR failed. Falling back to general OCR pipeline.")
+    return None # Signal to fall back
+
+def try_multiple_orientations(img, lang="eng"):
+    """
+    Try OCR on multiple image orientations and return the best result
+
+    Args:
+        img: PIL Image object (preprocessed)
+        lang: Language string for OCR
+
+    Returns:
+        Best OCR text result based on multiple orientational attempts
+    """
+    # First ensure OCR capabilities (Tesseract or EasyOCR) are available
+    if not is_tesseract_working() or not Image:
+        return ""
+
+    orientations = [0, 90, 180, 270]  # Common image rotations to try
+    best_text = ""
+    best_score = -1  # Initialize to -1 to allow for any positive score to be better
+
+    for angle in orientations:
+        try:
+            if angle == 0:
+                rotated_img = img  # No rotation (original image)
+            else:
+                rotated_img = img.rotate(angle, expand=True)  # Rotate the image by the specified angle
+
+            text, score = try_multiple_ocr_configs(rotated_img, lang)  # Perform OCR on rotated image
+
+            if VERBOSE_MODE:
+                print(f"Orientation {angle}: Score {score:.1f}")
+
+            if score > best_score:  # Update the best score and text if this orientation yields a better result
+                best_score = score
+                best_text = text
+                if VERBOSE_MODE and angle != 0:
+                    print(f"New best result found with {angle}° rotation (score: {best_score:.1f})")
+
+        except Exception as e_rotate:
+            print(f"Error during rotation or OCR at {angle}°: {e_rotate}")
+
+    return best_text
+
+def enhanced_image_ocr(file_path=None, img=None, enable_debug=False):
+    if VERBOSE_MODE: print(f"Starting enhanced_image_ocr for {file_path or 'provided image'}")
+
+    if not Image: return "[Image processing failed: Pillow library not available]"
+    try:
+        if img is None and file_path:
+            # --- HEIC/HEIF Support Check ---
+            _, ext = os.path.splitext(file_path)
+            ext = ext.lower()
+            if ext in ('.heic', '.heif') and not has_heif_support:
+                return f"[HEIC/HEIF file skipped: pillow-heif library not installed or failed to load]"
+            img = Image.open(file_path)
+        elif img is None:
+            return "[No image data available for OCR]"
+        if VERBOSE_MODE: print(f"Image opened: Size {img.size}, Mode {img.mode}")
+    except Exception as e:
+        return f"[Failed to open image: {e}]"
+
+    # Check if any OCR capability is available (Tesseract or EasyOCR)
+    ocr_available = is_tesseract_working()  # This returns tesseract_working OR has_easyocr
+    
+    if not OCR_ENABLED or not ocr_available:
+        if VERBOSE_MODE: 
+            if not OCR_ENABLED:
+                print("OCR disabled by configuration. Using basic image analysis.")
+            elif not tesseract_working and not has_easyocr:
+                print("No OCR engines available (neither Tesseract nor EasyOCR working). Using basic image analysis.")
+            else:
+                print("OCR disabled or not working. Using basic image analysis.")
+        return extract_image_without_ocr(img)
+
+    # If we get here, at least one OCR engine is available (Tesseract or EasyOCR)
+    if VERBOSE_MODE and not tesseract_working and has_easyocr:
+        print("Tesseract not available/working, using EasyOCR for text extraction")
+
+    debug_file_base = None
+    if enable_debug and file_path:
+        debug_dir = "ocr_debug"
+        os.makedirs(debug_dir, exist_ok=True)
+        debug_file_base = os.path.join(debug_dir, os.path.basename(file_path))
+
+
+    # 1. Handle White Text on Transparent Backgrounds First
+    if img.mode == 'RGBA':
+        # This function will composite on black and invert, good for OCR
+        transparent_preprocessed_imgs = preprocess_white_text_on_transparent(img, debug_path=debug_file_base)
+        if transparent_preprocessed_imgs:
+            best_text_rgba = ""
+            best_score_rgba = -1
+            for name, p_img in transparent_preprocessed_imgs:
+                if VERBOSE_MODE: print(f"Trying OCR on RGBA preprocessed: {name}")
+                text, score = try_multiple_ocr_configs(p_img)
+                if score > best_score_rgba:
+                    best_score_rgba = score
+                    best_text_rgba = text
+            if best_text_rgba.strip():
+                if VERBOSE_MODE: print(f"Found text from RGBA preprocessing (score: {best_score_rgba}).")
+                return best_text_rgba.strip()
+            else: # Convert to RGB for further processing if RGBA specific didn't yield much
+                if VERBOSE_MODE: print("RGBA specific preprocessing yielded no text, converting to RGB.")
+                img = img.convert("RGB")
+
+
+    # 2. Handle Potential White Text on Black Background (if not RGBA or RGBA failed)
+    # Heuristic to detect white on black (can be refined)
+    is_likely_white_on_black = False
+    try:
+        # Use a small sample for quick check
+        check_img = img.convert('L').resize((100,100))
+        stat = ImageStat.Stat(check_img)
+        if stat.mean[0] < 80 and stat.stddev[0] > 50: # Dark mean, high deviation
+            is_likely_white_on_black = True
+            if VERBOSE_MODE: print("Image is likely white text on black background based on stats.")
+    except Exception: pass # Ignore stat errors
+
+    if is_likely_white_on_black:
+        wob_preprocessed_imgs = preprocess_white_text_on_black(img, debug_path=debug_file_base)
+        if wob_preprocessed_imgs:
+            best_text_wob = ""
+            best_score_wob = -1
+            for name, p_img in wob_preprocessed_imgs:
+                if VERBOSE_MODE: print(f"Trying OCR on WOB preprocessed: {name}")
+                text, score = try_multiple_ocr_configs(p_img)
+                if score > best_score_wob:
+                    best_score_wob = score
+                    best_text_wob = text
+            if best_text_wob.strip():
+                if VERBOSE_MODE: print(f"Found text from White-on-Black preprocessing (score: {best_score_wob}).")
+                return best_text_wob.strip()
+
+
+    # 3. General Preprocessing and OCR Attempts
+    # Ensure image is in a suitable mode for general processing (L or RGB)
+    if img.mode == 'P': # Palette mode, convert to RGB
+        img = img.convert('RGB')
+    elif img.mode == 'RGBA': # If not caught by transparent preprocessing
+        img = img.convert('RGB')
+
+
+    # Scaling for very small or very large images (often helps screenshots)
+    width, height = img.size
+    # Target a moderate size, e.g. width of 1500px, but don't over-enlarge or over-shrink
+    # This helps normalize text size for Tesseract
+    OPTIMAL_WIDTH = 1500
+    MAX_DIM = 4000 # Avoid making images excessively large
+    MIN_DIM_FOR_SCALE_DOWN = 2500
+    MIN_DIM_FOR_SCALE_UP = 800
+
+    scaled_img = img
+    if width < MIN_DIM_FOR_SCALE_UP and height < MIN_DIM_FOR_SCALE_UP :
+        if width > 0 and height > 0 :
+            scale_factor = OPTIMAL_WIDTH / width
+            if scale_factor > 1.1 and scale_factor < 3.0: # Only scale if significant, cap at 3x
+                new_w, new_h = int(width * scale_factor), int(height * scale_factor)
+                if new_w < MAX_DIM and new_h < MAX_DIM:
+                    try:
+                        scaled_img = img.resize((new_w, new_h), Image.LANCZOS)
+                        if VERBOSE_MODE: print(f"Scaled image UP from {width}x{height} to {new_w}x{new_h}")
+                    except Exception as e_resize:
+                        print(f"Error scaling image up: {e_resize}")
+                        scaled_img = img
+    elif width > MIN_DIM_FOR_SCALE_DOWN or height > MIN_DIM_FOR_SCALE_DOWN:
+        if width > 0 and height > 0:
+            scale_factor = OPTIMAL_WIDTH / width if width > height else OPTIMAL_WIDTH / height
+            if scale_factor < 0.9 and scale_factor > 0.3: # Only scale if significant, cap at 0.3x
+                new_w, new_h = int(width * scale_factor), int(height * scale_factor)
+                try:
+                    scaled_img = img.resize((new_w, new_h), Image.LANCZOS)
+                    if VERBOSE_MODE: print(f"Scaled image DOWN from {width}x{height} to {new_w}x{new_h}")
+                except Exception as e_resize:
+                    print(f"Error scaling image down: {e_resize}")
+                    scaled_img = img
+
+
+    # Attempt structured document OCR if image is large (could be a full page scan/screenshot)
+    if scaled_img.width > 1000 and scaled_img.height > 800: # Heuristic for "document-like"
+        structured_text = enhanced_structured_document_ocr(scaled_img, debug_path=debug_file_base)
+        if structured_text and len(structured_text) > 20: # If it returned substantial text
+             if VERBOSE_MODE: print("Using text from structured document OCR pipeline.")
+             return structured_text
+
+
+    # General preprocessing pipeline
+    preprocessed_images = preprocess_image_for_ocr(scaled_img, debug_path=debug_file_base)
+    if not preprocessed_images: # If preprocessing itself failed
+        preprocessed_images = [("original_scaled", scaled_img)] # Try with just the scaled image
+
+    best_text = ""
+    best_score = -1
+
+    for name, proc_img in preprocessed_images:
+        if VERBOSE_MODE: print(f"Trying OCR with general preprocessing: {name}")
+        text, score = try_multiple_ocr_configs(proc_img)
+        if score > best_score:
+            best_score = score
+            best_text = text
+            if VERBOSE_MODE: print(f"New best result from '{name}' (score: {best_score:.1f})")
+
+    # If score is still low, try different orientations with the best preprocessed image found so far
+    # (or just the scaled image if preprocessing didn't improve score significantly)
+    # This threshold could be dynamic based on image properties.
+    # For screenshots, orientation is usually correct, but for photos it's key.
+    LOW_CONFIDENCE_THRESHOLD = 15 # Adjust as needed
+    if best_score < LOW_CONFIDENCE_THRESHOLD and best_score >=0 : # best_score could be 0
+        if VERBOSE_MODE: print(f"Low confidence score ({best_score:.1f}), trying orientations...")
+        # Find the preprocessed image that gave the current best_score, or use scaled_img
+        img_for_orientation_check = scaled_img # Default
+        if preprocessed_images:
+            current_best_img_name = ""
+            # Find which image yielded the best_text and best_score
+            # This is a bit indirect; ideally we'd store the image with the score.
+            # For simplicity, we'll use the 'enhanced_contrast_ac' if available, or first preprocessed, or scaled.
+            candidates_for_rotation = [p_img for p_name, p_img in preprocessed_images if "enhanced_contrast_ac" in p_name or "cv_adaptive_thresh" in p_name]
+            if candidates_for_rotation:
+                img_for_orientation_check = candidates_for_rotation[0]
+            elif preprocessed_images:
+                img_for_orientation_check = preprocessed_images[0][1]
+
+
+        orientation_text = try_multiple_orientations(img_for_orientation_check)
+        # Re-score orientation_text as try_multiple_orientations only returns text
+        # This is a bit redundant, try_multiple_orientations should ideally return score too
+        orientation_words_temp = re.findall(r'\b[a-zA-Z0-9]{2,}\b', orientation_text)
+        orientation_char_count_temp = sum(len(w) for w in orientation_words_temp)
+        orientation_alphanum_text_temp = ''.join(filter(str.isalnum, orientation_text))
+        orientation_score_temp = len(orientation_words_temp) + (orientation_char_count_temp / 10.0) + (len(orientation_alphanum_text_temp) / 20.0)
+
+        if orientation_score_temp > best_score:
+            if VERBOSE_MODE: print(f"Orientation adjustment yielded better text (score: {orientation_score_temp:.1f}).")
+            best_text = orientation_text
+            best_score = orientation_score_temp # Update best_score
+
+    if best_text.strip() and best_score > 1.0 : # Require a minimal score to consider it valid text
+        if VERBOSE_MODE: print(f"Final OCR result (score: {best_score:.1f}):\n{best_text.strip()[:200]}...")
+        return best_text.strip()
+    else:
+        if VERBOSE_MODE: print(f"OCR did not find sufficient text (best score: {best_score:.1f}). Falling back to image analysis.")
+        return extract_image_without_ocr(img) # Use original image for analysis if OCR fails
+
+
+def create_inverted_image(img): # This function seems unused, preprocess_image_for_ocr handles inversion. Retaining for now.
+    if not Image or not ImageOps : return img
+    try:
+        if img.mode == 'RGBA':
+            bg = Image.new('RGB', img.size, (0, 0, 0))
+            img_rgb = Image.alpha_composite(bg.convert('RGBA'), img).convert('RGB')
+        elif img.mode not in ['RGB', 'L']:
+            img_rgb = img.convert('RGB')
+        else:
+            img_rgb = img
+
+        return ImageOps.invert(img_rgb.convert('L' if img_rgb.mode != 'L' else 'L')) # Invert grayscale
+    except Exception as e:
+        print(f"Error creating inverted image: {e}")
+        return img
+
+def extract_text_from_file(file_path):
+    if VERBOSE_MODE:
+        print(f"Debug: Attempting to process file: {file_path}")
+
+    _, ext = os.path.splitext(file_path)
+    ext = ext.lower().lstrip('.')
+    output_path = os.path.splitext(file_path)[0] + ".txt"
+    text_content = None
+    print(f"Attempting to process file with extension: .{ext}")
+
+    # --- Plain Text Types ---
+    plain_text_exts = ["txt", "log", "ini", "md", "py", "js", "java", "c", "cpp", "cs", "php", "rb", "swift", "css", "yaml", "yml", "cfg", "conf", "sh", "bat", "ps1"]
+    if ext in plain_text_exts:
+        print("Processing as plain text...")
+        text_content = ""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text_content = f.read()
+            print("Successfully read as UTF-8.")
+        except UnicodeDecodeError:
+            print("UTF-8 decoding failed, trying fallback (cp1252)...")
+            try:
+                with open(file_path, 'r', encoding='cp1252') as f:
+                    text_content = f.read()
+                print("Successfully read as cp1252.")
+            except Exception:
+                print("Fallback encoding failed. Reading with UTF-8 ignoring errors.")
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    text_content = f.read()
+        except Exception as e:
+            print(f"Error reading plain text file: {e}")
+            text_content = ""
+
+    # --- CSV / TSV ---
+    elif ext in ("csv", "tsv"):
+        # (Original CSV/TSV logic - no changes needed based on recent requests)
+        print("Processing as CSV/TSV...")
+        text_content = ""
+        pd_mod = module_available("pandas")
+        delimiter = ',' if ext == 'csv' else '\t'
+
+        if pd_mod:
+             if VERBOSE_MODE: print("Attempting processing with Pandas...")
+             try:
+                try:
+                    df = pd_mod.read_csv(file_path, sep=delimiter, header=None, on_bad_lines='warn', encoding='utf-8', low_memory=False, skip_blank_lines=False, dtype=str).fillna('')
+                except UnicodeDecodeError:
+                    if VERBOSE_MODE: print("Pandas UTF-8 failed, trying cp1252...")
+                    df = pd_mod.read_csv(file_path, sep=delimiter, header=None, on_bad_lines='warn', encoding='cp1252', low_memory=False, skip_blank_lines=False, dtype=str).fillna('')
+                text_content = df.to_string(index=False, header=False)
+                print(f"Pandas successfully processed .{ext} file.")
+             except Exception as e_pd:
+                 print(f"Pandas failed for .{ext}: {e_pd}. Falling back to standard csv module if available.")
+                 text_content = None # Signal to try standard csv
+        else:
+             if VERBOSE_MODE: print("Pandas library not available for CSV/TSV.")
+             text_content = None # Signal to try standard csv
+
+        if text_content is None: # Try standard csv if pandas failed or wasn't available
+             if VERBOSE_MODE: print("Attempting processing with standard CSV module...")
+             text_content = "" # Reset for standard module
+             try:
+                detected_encoding = 'utf-8'
+                try:
+                    with open(file_path, 'r', encoding='utf-8', newline='') as f: f.read()
+                except UnicodeDecodeError:
+                    detected_encoding = 'cp1252'
+                except Exception: pass
+
+                with open(file_path, 'r', encoding=detected_encoding, newline='', errors='replace') as csvfile:
+                    reader = csv.reader(csvfile, delimiter=delimiter)
+                    rows = [delimiter.join(row) for row in reader]
+                    text_content = "\n".join(rows)
+                print(f"Standard csv module processed .{ext} file (encoding: {detected_encoding}).")
+             except Exception as e_csv:
+                print(f"Standard csv module failed for .{ext}: {e_csv}")
+                text_content = ""
+
+    # --- JSON ---
+    elif ext == "json":
+        # (Original JSON logic)
+        print("Processing as JSON...")
+        text_content = ""
+        try:
+            detected_encoding = 'utf-8'
+            try:
+                 with open(file_path, 'r', encoding='utf-8') as f: data = json.load(f)
+            except UnicodeDecodeError:
+                 try:
+                     with open(file_path, 'r', encoding='cp1252') as f: data = json.load(f)
+                     detected_encoding = 'cp1252'
+                 except Exception as e_fallback_json: raise e_fallback_json
+
+            text_content = json.dumps(data, indent=4, ensure_ascii=False)
+            print(f"Successfully processed JSON file (encoding: {detected_encoding}).")
+        except json.JSONDecodeError as e_json:
+            print(f"JSON decoding failed: {e_json}. Reading as plain text.")
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f: text_content = f.read()
+            except Exception as e_read: text_content = ""
+        except Exception as e: text_content = ""
+
+
+    # --- XML ---
+    elif ext == "xml":
+        # (Original XML logic)
+        print("Processing as XML...")
+        text_content = ""
+        try:
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            xml_texts = []
+            for elem in root.iter():
+                if elem.text and elem.text.strip(): xml_texts.append(elem.text.strip())
+                if elem.tail and elem.tail.strip(): xml_texts.append(elem.tail.strip())
+            text_content = "\n".join(filter(None, xml_texts))
+            print("Successfully processed XML file using ElementTree.")
+        except ET.ParseError as e_xml:
+             print(f"XML parsing failed: {e_xml}. Reading as plain text.")
+             try:
+                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f: text_content = f.read()
+             except Exception as e_read: text_content = ""
+        except Exception as e: text_content = ""
+
+    # --- NEW FILE TYPE: SVG (Scalable Vector Graphics) ---
+    elif ext == "svg":
+        print("Processing as SVG...")
+        text_content = ""
+        try:
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            svg_texts = []
+            # SVG namespace is common, so we need to handle it.
+            # Attempt to find it or common variants.
+            # A more robust way is to iterate and check local name, but this is simpler.
+            namespaces = {'svg': 'http://www.w3.org/2000/svg'} # Common default
+            # If root has a namespace, use it
+            if '}' in root.tag:
+                ns_uri = root.tag.split('}')[0][1:]
+                if ns_uri:
+                    namespaces['svgns'] = ns_uri # Generic namespace alias
+                    text_elements = root.findall('.//svgns:text', namespaces)
+                    tspan_elements = root.findall('.//svgns:tspan', namespaces)
+                else: # No namespace in root tag, try without
+                    text_elements = root.findall('.//text')
+                    tspan_elements = root.findall('.//tspan')
+
+            else: # No namespace in root tag, try without
+                text_elements = root.findall('.//text')
+                tspan_elements = root.findall('.//tspan')
+
+
+            for elem in text_elements:
+                # Extract text from the element itself and any child tspan elements
+                # Using itertext() to get all text nodes within the element
+                inner_text = ''.join(elem.itertext()).strip()
+                if inner_text:
+                    svg_texts.append(inner_text)
+
+            for elem in tspan_elements: # Also catch tspans not inside a <text> (less common but possible)
+                parent_is_text = any(p.tag.endswith('text') for p in elem.iterancestors())
+                if not parent_is_text: # Avoid double counting if already processed by parent <text>
+                    inner_text = ''.join(elem.itertext()).strip()
+                    if inner_text:
+                        svg_texts.append(inner_text)
+
+            text_content = "\n".join(filter(None, svg_texts))
+            if text_content:
+                print("Successfully extracted text from SVG text elements.")
+            else:
+                print("No direct text elements found in SVG or SVG parsing issues. May contain rasterized text requiring OCR.")
+                # Attempt to OCR SVG as a fallback (requires rendering SVG to image first - complex)
+                # For now, we'll just note it. If Pillow can open it as an image, it might be handled by image block.
+                # Check if Pillow can open it (it might if it's an SVG with an embedded raster image, or if librsvg is installed)
+                try:
+                    if Image:
+                        img = Image.open(file_path)
+                        print("SVG opened by Pillow, attempting OCR as image...")
+                        text_content = enhanced_image_ocr(img=img, file_path=file_path, enable_debug=VERBOSE_MODE)
+                except Exception as e_svg_img:
+                    print(f"Could not treat SVG as standard image for OCR: {e_svg_img}")
+                    text_content = "[SVG contains no direct text elements; rendering for OCR not implemented]"
+
+        except ET.ParseError as e_svg_parse:
+            print(f"SVG parsing failed: {e_svg_parse}. It might be malformed or not XML-based SVG.")
+            text_content = "[SVG parsing failed]"
+        except Exception as e:
+            print(f"Error processing SVG file: {e}")
+            text_content = "[Error processing SVG]"
+    # --- END SVG ---
+
+    # --- Excel (XLS, XLSX) ---
+    elif ext in ("xls", "xlsx"):
+        # (Original Excel logic)
+        print("Processing as Excel...")
+        text_content = ""
+        pd_mod = module_available("pandas")
+        if pd_mod:
+            try:
+                excel_file = pd_mod.ExcelFile(file_path)
+                all_sheets_text = []
+                if VERBOSE_MODE: print(f"Reading {len(excel_file.sheet_names)} sheet(s)...")
+                for sheet_name in excel_file.sheet_names:
+                    if VERBOSE_MODE: print(f" - Processing sheet: '{sheet_name}'")
+                    try:
+                        df = excel_file.parse(sheet_name, header=None, dtype=str).fillna('')
+                        sheet_text = df.to_csv(index=False, header=False, sep='\t')
+                        if sheet_text.strip():
+                            all_sheets_text.append(f"--- Sheet: {sheet_name} ---\n{sheet_text.strip()}")
+                    except Exception as sheet_err: print(f"   Could not process sheet '{sheet_name}': {sheet_err}")
+                text_content = "\n\n".join(all_sheets_text)
+                if text_content: print(f"Pandas extracted text from Excel file.")
+                else: print("Excel file processed, but no text content found in sheets.")
+            except Exception as e:
+                if "File is password-protected" in str(e): print("Pandas Excel failed: File is password-protected.")
+                elif "Excel file format cannot be determined" in str(e): print("Pandas Excel failed: Unrecognized Excel format.")
+                else: print(f"Pandas Excel extraction failed: {e}")
+                text_content = ""
+        else: text_content = ""
+
+    # --- Rich Text Format (RTF) ---
+    elif ext == "rtf":
+        # (Original RTF logic)
+        print("Processing as RTF...")
+        text_content = ""
+        striprtf_func = module_available("striprtf.striprtf", "rtf_to_text")
+        if striprtf_func:
+            try:
+                rtf_content_bytes = b''
+                with open(file_path, 'rb') as f: rtf_content_bytes = f.read()
+                # Try to decode with common RTF encodings, striprtf expects string
+                try:
+                    rtf_content_str = rtf_content_bytes.decode('cp1252')
+                except UnicodeDecodeError:
+                    try:
+                        rtf_content_str = rtf_content_bytes.decode('mac_roman')
+                    except UnicodeDecodeError:
+                        rtf_content_str = rtf_content_bytes.decode('ascii', errors='ignore')
+
+                text_content = striprtf_func(rtf_content_str)
+                print("Successfully processed RTF using striprtf.")
+            except Exception as e: print(f"RTF processing failed: {e}"); text_content = ""
+        else: text_content = ""
+
+
+    # --- OpenDocument Formats (ODT, ODS, ODP) ---
+    elif ext in ("odt", "ods", "odp"):
+        # (Original ODF logic)
+        print(f"Processing as OpenDocument .{ext}...")
+        text_content = ""
+        if odf_load and odf_text and odf_teletype:
+            try:
+                doc = odf_load(file_path)
+                extracted_texts = []
+                all_paras = doc.getElementsByType(odf_text.P)
+                for para in all_paras:
+                    para_text = odf_teletype.extractText(para)
+                    if para_text.strip(): extracted_texts.append(para_text.strip())
+
+                if ext == 'ods' and Table and TableRow and TableCell:
+                    table_texts_ods = []
+                    tables_ods = doc.getElementsByType(Table)
+                    for t_idx, table_ods in enumerate(tables_ods):
+                         table_texts_ods.append(f"--- Table {t_idx+1} ---")
+                         rows_ods = table_ods.getElementsByType(TableRow)
+                         for row_ods in rows_ods:
+                            cells_ods = row_ods.getElementsByType(TableCell)
+                            row_data_ods = []
+                            for cell_ods in cells_ods:
+                                cell_paras_ods = cell_ods.getElementsByType(odf_text.P)
+                                cell_content_ods = " ".join(odf_teletype.extractText(p_ods) for p_ods in cell_paras_ods).strip()
+                                repeat_ods = cell_ods.getAttribute("numbercolumnsrepeated")
+                                row_data_ods.extend([cell_content_ods] * (int(repeat_ods) if repeat_ods else 1))
+                            table_texts_ods.append("\t".join(row_data_ods))
+                    if table_texts_ods: extracted_texts = table_texts_ods
+                text_content = "\n".join(extracted_texts)
+                if text_content: print(f"Successfully processed ODF .{ext} using odfpy.")
+                else: print(f"Processed ODF .{ext}, but no text content found.")
+            except Exception as e: print(f"ODF processing failed for .{ext}: {e}"); text_content = ""
+        else: text_content = ""
+
+
+    # --- EPUB E-books ---
+    elif ext == "epub":
+        # (Original EPUB logic)
+        print("Processing as EPUB...")
+        text_content = ""
+        epub_mod_epub = module_available("ebooklib.epub") # renamed to avoid conflict
+        bs4_mod_epub = module_available("bs4", "BeautifulSoup")
+
+        if epub_mod_epub and bs4_mod_epub:
+            try:
+                book = epub_mod_epub.read_epub(file_path)
+                items = list(book.get_items_of_type(ebooklib.ITEM_DOCUMENT))
+                full_text_epub = []
+                if VERBOSE_MODE: print(f"Found {len(items)} document items in EPUB.")
+                for i, item in enumerate(items):
+                    content_epub = item.get_content()
+                    try: decoded_content_epub = content_epub.decode('utf-8')
+                    except UnicodeDecodeError:
+                         try: decoded_content_epub = content_epub.decode('latin-1')
+                         except Exception: continue # Skip item if decoding fails
+                    except AttributeError: decoded_content_epub = str(content_epub)
+
+                    soup_epub = bs4_mod_epub(decoded_content_epub, 'lxml')
+                    for script_or_style_epub in soup_epub(["script", "style"]): script_or_style_epub.decompose()
+                    item_text_epub = soup_epub.get_text(separator='\n', strip=True)
+                    if item_text_epub: full_text_epub.append(item_text_epub)
+                text_content = "\n\n--- EPUB Section Break ---\n\n".join(full_text_epub)
+                print(f"Successfully extracted text from EPUB (approx {len(text_content)} chars).")
+            except Exception as e:
+                 if "Error reading EPUB file" in str(e): print(f"EPUB failed: Corrupted or invalid EPUB.")
+                 else: print(f"EPUB processing failed: {e}")
+                 text_content = ""
+        else: text_content = ""
+
+
+    # --- Email Files (.eml, .msg) ---
+    elif ext == "eml":
+        # (Original EML logic)
+        print("Processing as EML...")
+        text_content = ""
+        try:
+            with open(file_path, 'rb') as f_eml: msg_eml = email.message_from_bytes(f_eml.read())
+            body_eml = ""
+            for part_eml in msg_eml.walk():
+                ctype_eml = part_eml.get_content_type()
+                cdispo_eml = str(part_eml.get('Content-Disposition'))
+                if ctype_eml == 'text/plain' and 'attachment' not in cdispo_eml:
+                    payload_eml = part_eml.get_payload(decode=True)
+                    charset_eml = part_eml.get_content_charset() or 'utf-8'
+                    try: body_eml = payload_eml.decode(charset_eml, errors='replace'); break
+                    except (LookupError, UnicodeDecodeError):
+                         try: body_eml = payload_eml.decode('utf-8', errors='replace'); break
+                         except Exception: pass # keep body_eml empty
+
+            if not body_eml and BeautifulSoup: # Try HTML part if BS4 is available
+                 for part_eml in msg_eml.walk():
+                     ctype_eml = part_eml.get_content_type()
+                     cdispo_eml = str(part_eml.get('Content-Disposition'))
+                     if ctype_eml == 'text/html' and 'attachment' not in cdispo_eml:
+                         payload_eml = part_eml.get_payload(decode=True)
+                         charset_eml = part_eml.get_content_charset() or 'utf-8'
+                         html_content_eml = ""
+                         try: html_content_eml = payload_eml.decode(charset_eml, errors='replace')
+                         except (LookupError, UnicodeDecodeError):
+                              try: html_content_eml = payload_eml.decode('utf-8', errors='replace')
+                              except Exception: pass
+                         if html_content_eml:
+                              try:
+                                   soup_eml = BeautifulSoup(html_content_eml, 'lxml')
+                                   for elem_eml in soup_eml(["script", "style", "head", "meta", "link"]): elem_eml.decompose()
+                                   body_eml = "\n".join(line.strip() for line in soup_eml.get_text(separator="\n").splitlines() if line.strip())
+                                   break
+                              except Exception: pass
+
+
+            headers_eml = []
+            from email.header import decode_header, make_header
+            for key_eml in ['subject', 'from', 'to', 'cc', 'date']:
+                 header_val_raw_eml = msg_eml.get(key_eml)
+                 if header_val_raw_eml:
+                      decoded_header_eml = make_header(decode_header(header_val_raw_eml))
+                      headers_eml.append(f"{key_eml.capitalize()}: {decoded_header_eml}")
+            text_content = "\n".join(headers_eml) + "\n\n" + body_eml.strip()
+            print("Successfully processed EML file.")
+        except Exception as e: print(f"EML processing failed: {e}"); text_content = ""
+
+
+    elif ext == "msg":
+         # (Original MSG logic)
+         print("Processing as MSG...")
+         text_content = ""
+         extract_msg_mod = module_available("extract_msg")
+         if extract_msg_mod:
+             try:
+                 msg_obj = extract_msg_mod.Message(file_path)
+                 headers_msg = [f"Subject: {msg_obj.subject}", f"From: {msg_obj.sender}", f"To: {msg_obj.to}", f"Date: {msg_obj.date}"]
+                 if msg_obj.cc: headers_msg.append(f"Cc: {msg_obj.cc}")
+                 # Body might be plain text or HTML, prefer plain
+                 msg_body_msg = msg_obj.body.strip()
+                 if msg_body_msg.lower().strip().startswith('<html') or (msg_body_msg.startswith('<') and msg_body_msg.endswith('>')):
+                      if BeautifulSoup:
+                           try:
+                               soup_msg = BeautifulSoup(msg_body_msg, 'lxml')
+                               for elem_msg in soup_msg(["script", "style", "head", "meta", "link"]): elem_msg.decompose()
+                               msg_body_msg = "\n".join(line.strip() for line in soup_msg.get_text(separator="\n").splitlines() if line.strip())
+                           except Exception: # Fallback to basic regex if BS fails
+                                msg_body_msg = re.sub(r'<style[^>]*>.*?</style>|<script[^>]*>.*?</script>|<[^>]+>', ' ', msg_body_msg)
+                                msg_body_msg = re.sub(r'\s+', ' ', msg_body_msg).strip()
+                      else: # Basic regex if no BS4
+                           msg_body_msg = re.sub(r'<style[^>]*>.*?</style>|<script[^>]*>.*?</script>|<[^>]+>', ' ', msg_body_msg)
+                           msg_body_msg = re.sub(r'\s+', ' ', msg_body_msg).strip()
+
+                 text_content = "\n".join(filter(None, headers_msg)) + "\n\n" + msg_body_msg
+                 print("Successfully processed MSG file.")
+             except Exception as e: print(f"MSG processing failed: {e}"); text_content = ""
+         else: text_content = ""
+
+    # --- PDF Extraction ---
+    elif ext == "pdf":
+        # (Original PDF logic - relies on enhanced_image_ocr which is now improved)
+        print("Using enhanced PDF extraction...")
+        text_content = ""
+        text_pages = []
+        processed_pdf = False
+        fitz_mod = module_available("fitz")
+        if fitz_mod:
+            if VERBOSE_MODE: print("Attempting PDF extraction with PyMuPDF (fitz)...")
+            doc_pdf = None
+            try:
+                doc_pdf = fitz_mod.open(file_path)
+                for i, page_pdf in enumerate(doc_pdf, start=1):
+                    page_text_pdf = page_pdf.get_text("text", sort=True).strip()
+                    if page_text_pdf:
+                        text_pages.append(page_text_pdf)
+                    else: # No text layer, try OCR
+                        if is_tesseract_working() and Image:
+                            if VERBOSE_MODE: print(f"Page {i}: No text layer, attempting OCR.")
+                            pix_pdf = page_pdf.get_pixmap(dpi=300)
+                            img_pdf = Image.frombytes("RGB", [pix_pdf.width, pix_pdf.height], pix_pdf.samples)
+                            ocr_text_pdf = enhanced_image_ocr(img=img_pdf, file_path=f"{file_path}_page_{i}.png", enable_debug=VERBOSE_MODE) # Pass filename for debug
+                            if ocr_text_pdf and not ocr_text_pdf.startswith("[IMAGE ANALYSIS"):
+                                text_pages.append(f"--- OCR Page {i} ---\n{ocr_text_pdf}")
+                            else: # OCR failed or returned analysis
+                                text_pages.append(f"--- Page {i} (No Text Layer) ---\n{ocr_text_pdf if ocr_text_pdf else '[OCR attempt failed or yielded no text]'}")
+                        else:
+                            text_pages.append(f"--- Page {i} ---\n[Page appears to be image-only. OCR unavailable/not working.]")
+                processed_pdf = True
+            except Exception as e_fitz:
+                print(f"Error reading PDF with PyMuPDF: {e_fitz}")
+                if "cannot open document: permission denied" in str(e_fitz).lower():
+                     print("PyMuPDF: PDF may be password protected or corrupted.")
+                text_pages = []
+            finally:
+                 if doc_pdf: doc_pdf.close()
+        # ... (PyPDF2 and pdf2image fallbacks remain, using the improved enhanced_image_ocr) ...
+        if not processed_pdf: # Fallback to PyPDF2 if PyMuPDF failed
+            PyPDF2_mod = module_available("PyPDF2")
+            if PyPDF2_mod:
+                if VERBOSE_MODE: print("Attempting PDF extraction with PyPDF2...")
+                try:
+                    reader = PyPDF2_mod.PdfReader(file_path)
+                    for i, page_pypdf in enumerate(reader.pages, start=1):
+                        page_text_pypdf = page_pypdf.extract_text()
+                        if page_text_pypdf and page_text_pypdf.strip():
+                            text_pages.append(page_text_pypdf)
+                        else: # PyPDF2 has no OCR, so note if page likely image
+                             text_pages.append(f"--- Page {i} ---\n[No text extracted by PyPDF2. Page may be image-only. OCR via this path not available.]")
+                    if text_pages: processed_pdf = True
+                except PyPDF2.errors.PdfReadError as e_pypdf_read:
+                    print(f"PyPDF2 PdfReadError: {e_pypdf_read}. Often due to encryption or corruption.")
+                except Exception as e_pypdf: print(f"PyPDF2 failed: {e_pypdf}")
+                if not processed_pdf: text_pages = [] # Reset if PyPDF2 also failed
+
+        if not processed_pdf and poppler_working and Image and convert_from_path: # Fallback to pdf2image + OCR
+             if VERBOSE_MODE: print("Attempting PDF extraction with pdf2image + Enhanced OCR/Analysis...")
+             try:
+                 images_pdf = convert_from_path(file_path, dpi=300)
+                 for i, img_pdf_page in enumerate(images_pdf, start=1):
+                     ocr_text_page = enhanced_image_ocr(img=img_pdf_page, file_path=f"{file_path}_page_{i}.png", enable_debug=(VERBOSE_MODE and i==0)) # Debug first page
+                     if ocr_text_page and not ocr_text_page.startswith("[IMAGE ANALYSIS"):
+                         text_pages.append(f"--- OCR Page {i} (via pdf2image) ---\n{ocr_text_page}")
+                     else:
+                         text_pages.append(f"--- Page {i} (via pdf2image) ---\n{ocr_text_page if ocr_text_page else '[OCR attempt failed or yielded no text]'}")
+                 if text_pages: processed_pdf = True
+             except Exception as e_pdf2img:
+                 print(f"pdf2image fallback failed: {e_pdf2img}")
+                 if "poppler" in str(e_pdf2img).lower(): print("Hint: 'pdf2image' often requires Poppler utilities (pdftoppm) to be installed and in PATH.")
+
+        if not processed_pdf and not text_pages: # If all methods failed
+             text_pages.append("[PDF processing failed: No suitable PDF library available or all methods failed.]")
+        text_content = "\n\n--- Page Break ---\n\n".join(text_pages)
+
+
+    # --- DOCX Extraction ---
+    elif ext == "docx":
+        # (Original DOCX logic)
+        print("Processing as DOCX...")
+        text_content = ""
+        processed_docx = False
+        docx_doc_mod = module_available("docx", "Document")
+        if docx_doc_mod:
+            if VERBOSE_MODE: print("Attempting DOCX extraction with python-docx...")
+            try:
+                doc_dx = docx_doc_mod(file_path)
+                para_content_dx = []
+                for p_dx in doc_dx.paragraphs:
+                    if p_dx.text.strip(): para_content_dx.append(p_dx.text.strip())
+                if doc_dx.tables:
+                     if VERBOSE_MODE: print(f"Extracting text from {len(doc_dx.tables)} DOCX table(s)...")
+                     for t_idx_dx, table_dx in enumerate(doc_dx.tables):
+                          para_content_dx.append(f"\n--- Table {t_idx_dx+1} ---")
+                          for row_dx in table_dx.rows:
+                                row_texts_dx = ["\n".join([p_cell.text.strip() for p_cell in cell_dx.paragraphs if p_cell.text.strip()]).strip() for cell_dx in row_dx.cells]
+                                para_content_dx.append("\t".join(row_texts_dx))
+                text_content = "\n".join(para_content_dx)
+                if text_content.strip(): print(f"python-docx extracted text."); processed_docx = True
+                else: print("python-docx processed but found no text.")
+            except Exception as e_dx:
+                 if "File contains password encrypted data" in str(e_dx): print("python-docx failed: File is password-protected.")
+                 else: print(f"python-docx extraction failed: {e_dx}")
+                 text_content = ""
+        if not processed_docx: # Fallback to docx2txt
+            docx2txt_mod = module_available("docx2txt")
+            if docx2txt_mod:
+                if VERBOSE_MODE: print("Attempting DOCX extraction with docx2txt fallback...")
+                try:
+                    text_content = docx2txt_mod.process(file_path)
+                    if text_content and text_content.strip(): print(f"docx2txt extracted text."); processed_docx = True
+                    else: print("docx2txt did not extract any text.")
+                except Exception as e_d2t: print(f"docx2txt extraction failed: {e_d2t}"); text_content = ""
+        if not processed_docx and not text_content: print("No available/successful DOCX library found.")
+
+
+    # --- PPTX Extraction ---
+    elif ext in ("ppt", "pptx"):
+        # (Original PPTX logic)
+        print("Processing as PPT/PPTX...")
+        text_content = ""
+        text_runs_ppt = []
+        prs_mod = module_available("pptx", "Presentation")
+        if prs_mod:
+            try:
+                prs_ppt = prs_mod(file_path)
+                if VERBOSE_MODE: print(f"Opened PPTX with {len(prs_ppt.slides)} slides.")
+                for i_ppt, slide_ppt in enumerate(prs_ppt.slides, start=1):
+                    slide_texts_ppt = []
+                    for shape_ppt in slide_ppt.shapes:
+                        shape_text_ppt = ""
+                        if hasattr(shape_ppt, "text_frame") and shape_ppt.text_frame and shape_ppt.text_frame.text:
+                             shape_text_ppt = shape_ppt.text_frame.text.strip()
+                        elif hasattr(shape_ppt, "text") and shape_ppt.text: # Some shapes have .text directly
+                            shape_text_ppt = shape_ppt.text.strip()
+                        if shape_text_ppt: slide_texts_ppt.append(shape_text_ppt)
+                    if slide_ppt.has_notes_slide:
+                         notes_text_ppt = slide_ppt.notes_slide.notes_text_frame.text.strip()
+                         if notes_text_ppt: slide_texts_ppt.append(f"--- Notes Slide {i_ppt} ---\n{notes_text_ppt}")
+                    if slide_texts_ppt: text_runs_ppt.append(f"--- Slide {i_ppt} ---\n" + "\n".join(filter(None, slide_texts_ppt)))
+                text_content = "\n\n".join(text_runs_ppt)
+                if text_content: print(f"Successfully extracted text from PPTX.")
+                else: print("Processed PPTX, but no text content found.")
+            except Exception as e_ppt:
+                 if "File is not a zip file" in str(e_ppt) and ext == 'ppt': print(f"PPTX lib error: Legacy .ppt not supported. Try saving as .pptx.")
+                 elif "encrypted" in str(e_ppt).lower(): print("PPTX error: File is password-protected.")
+                 else: print(f"PPTX extraction error: {e_ppt}")
+                 text_content = ""
+        else: text_content = ""
+
+
+    # --- HTML Extraction ---
+    elif ext in ("html", "htm"):
+        # (Original HTML logic)
+        print("Processing as HTML...")
+        text_content = ""
+        html_content_html = ""
+        try:
+            detected_encoding_html = 'utf-8'
+            try:
+                 with open(file_path, 'r', encoding='utf-8') as f_html: html_content_html = f_html.read()
+            except UnicodeDecodeError:
+                 try:
+                     with open(file_path, 'r', errors='ignore') as f_html: html_content_html = f_html.read()
+                     detected_encoding_html = 'system default (errors ignored)'
+                 except Exception as e_read_fallback_html: html_content_html = ""
+
+            if html_content_html and BeautifulSoup:
+                bs4_mod_html = BeautifulSoup # Alias for clarity
+                parsed_with_bs_html = False
+                try: # Try lxml
+                    soup_html = bs4_mod_html(html_content_html, 'lxml')
+                    for elem_html in soup_html(["script", "style", "head", "meta", "link", "noscript"]): elem_html.decompose()
+                    lines_html = (line.strip() for line in soup_html.get_text(separator="\n").splitlines())
+                    text_content = "\n".join(line for line in lines_html if line)
+                    parsed_with_bs_html = True
+                except Exception: # Fallback to html.parser
+                    try:
+                         soup_html = bs4_mod_html(html_content_html, 'html.parser')
+                         for elem_html in soup_html(["script", "style", "head", "meta", "link", "noscript"]): elem_html.decompose()
+                         lines_html = (line.strip() for line in soup_html.get_text(separator="\n").splitlines())
+                         text_content = "\n".join(line for line in lines_html if line)
+                         parsed_with_bs_html = True
+                    except Exception as e_parser_html: print(f"BeautifulSoup html.parser also failed: {e_parser_html}")
+
+                if not parsed_with_bs_html and not text_content: # Fallback if BS4 failed or no BS4
+                     html_content_stripped_html = re.sub(r'<(script|style).*?>.*?</\1>', '', html_content_html, flags=re.IGNORECASE | re.DOTALL)
+                     html_text_tags_removed_html = re.sub(r'<[^>]+>', ' ', html_content_stripped_html)
+                     text_content = re.sub(r'\s+', ' ', html_text_tags_removed_html).strip()
+                print(f"Processed HTML (encoding: {detected_encoding_html}, parser: {'BeautifulSoup' if parsed_with_bs_html else 'regex'}).")
+            elif html_content_html: # BS4 not available but content read
+                 html_content_stripped_html = re.sub(r'<(script|style).*?>.*?</\1>', '', html_content_html, flags=re.IGNORECASE | re.DOTALL)
+                 html_text_tags_removed_html = re.sub(r'<[^>]+>', ' ', html_content_stripped_html)
+                 text_content = re.sub(r'\s+', ' ', html_text_tags_removed_html).strip()
+                 print(f"Processed HTML with regex (BeautifulSoup not available).")
+
+        except Exception as e_html: print(f"Error processing HTML file: {e_html}"); text_content = ""
+
+
+    # --- Image Extraction with Enhanced OCR (PNG, JPG, BMP, GIF, TIF, WEBP, HEIC, HEIF) ---
+    # --- HEIC/HEIF added to this block ---
+    elif ext in ("png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "webp", "heic", "heif"):
+        print(f"Processing as Image (.{ext})...")
+        text_content = ""
+        if not Image:
+            text_content = "[Image processing failed: Pillow library not available]"
+        elif ext in ("heic", "heif") and not has_heif_support:
+             text_content = f"[.{ext} file skipped: pillow-heif library not installed or specific file error]"
+        else:
+            try:
+                # enhanced_image_ocr will handle Tesseract checks internally
+                text_content = enhanced_image_ocr(file_path=file_path, enable_debug=VERBOSE_MODE)
+                if text_content and not text_content.startswith("[IMAGE ANALYSIS") and not text_content.startswith("[Failed to open image"):
+                    print(f"Enhanced OCR extracted text from image (approx {len(text_content)} chars).")
+                elif text_content and (text_content.startswith("[IMAGE ANALYSIS") or text_content.startswith("[Failed to open image")):
+                    print(f"Image analysis performed as OCR failed or was unavailable. Result: {text_content.splitlines()[0]}") # First line of analysis
+                else: # No text, no analysis (should not happen if enhanced_image_ocr is robust)
+                    print("Enhanced OCR/analysis did not return content for image.")
+            except Exception as e_img_ocr:
+                print(f"Image processing/OCR failed with error: {e_img_ocr}")
+                text_content = f"[Image processing error: {e_img_ocr}]"
+    else:
+        print(f"Unsupported file type for direct text extraction: .{ext}")
+        return None
+
+    if text_content is not None:
+        try:
+            normalized_content = text_content.replace('\r\n', '\n').replace('\r', '\n')
+            with open(output_path, 'w', encoding='utf-8') as out_file:
+                out_file.write(normalized_content)
+            print(f"Output successfully saved to: {output_path}")
+            return output_path
+        except Exception as e:
+            print(f"Error saving text to {output_path}: {e}")
+            return None
+    else:
+         print(f"No text content generated or extracted for {file_path}.")
+         return None
+
+# --- process_file_path function remains largely the same, but will use the updated extract_text_from_file ---
+def process_file_path(file_path, process_recursively=False):
+    processed_count = 0
+    success_count = 0
+    error_count = 0
+    no_output_count = 0
+    results = []
+
+    if not os.path.exists(file_path):
+        print(f"ERROR: Path does not exist: {file_path}")
+        error_count += 1
+        return processed_count, success_count, error_count, no_output_count, results
+
+    if os.path.isfile(file_path):
+        if VERBOSE_MODE: print(f"Processing single file: {file_path}")
+        processed_count += 1
+        try:
+            txt_file_path = extract_text_from_file(file_path)
+            if txt_file_path:
+                if VERBOSE_MODE: print(f"SUCCESS: Text extracted and saved to: {txt_file_path}")
+                success_count += 1
+                results.append((file_path, txt_file_path, "success"))
+            else:
+                if VERBOSE_MODE: print(f"INFO: No text file generated for '{file_path}'.")
+                no_output_count += 1
+                results.append((file_path, None, "no_output"))
+        except Exception as e:
+            print(f"ERROR processing '{file_path}': {e}")
+            error_count += 1
+            results.append((file_path, None, "error"))
+
+    elif os.path.isdir(file_path):
+        if VERBOSE_MODE: print(f"Processing directory: {file_path} (Recursive: {process_recursively})")
+        # Ensure supported_extensions is available in this scope
+        # (It's defined globally before widget setup)
+        def is_supported_file(filename_local): # Renamed to avoid conflict
+            _, ext_local = os.path.splitext(filename_local)
+            return ext_local.lower().lstrip('.') in [e.lstrip('.') for e in supported_extensions]
+
+        if process_recursively:
+            for root, _, files in os.walk(file_path):
+                for filename in files:
+                    full_path = os.path.join(root, filename)
+                    if is_supported_file(full_path):
+                        processed_count += 1
+                        print(f"\n--- Processing file {processed_count}: {full_path} ---")
+                        try:
+                            txt_file_path = extract_text_from_file(full_path)
+                            if txt_file_path:
+                                success_count += 1; results.append((full_path, txt_file_path, "success"))
+                            else:
+                                no_output_count += 1; results.append((full_path, None, "no_output"))
+                        except Exception as e:
+                            error_count += 1; results.append((full_path, None, "error"))
+                            print(f"ERROR processing '{full_path}': {e}")
+        else: # Not recursive
+            for filename in os.listdir(file_path):
+                full_path = os.path.join(file_path, filename)
+                if os.path.isfile(full_path) and is_supported_file(full_path):
+                    processed_count += 1
+                    print(f"\n--- Processing file {processed_count}: {full_path} ---")
+                    try:
+                        txt_file_path = extract_text_from_file(full_path)
+                        if txt_file_path:
+                            success_count += 1; results.append((full_path, txt_file_path, "success"))
+                        else:
+                            no_output_count += 1; results.append((full_path, None, "no_output"))
+                    except Exception as e:
+                        error_count += 1; results.append((full_path, None, "error"))
+                        print(f"ERROR processing '{full_path}': {e}")
+    return processed_count, success_count, error_count, no_output_count, results
+
+
+# ------------------- Widget Setup -------------------
+# Define supported extensions for the FileUpload widget
+# --- UPDATED supported_extensions ---
+supported_extensions = [
+    ".txt", ".log", ".ini", ".md", ".py", ".js", ".java", ".c", ".cpp", ".cs", ".php", ".rb", ".swift", ".css", ".yaml", ".yml", ".cfg", ".conf", ".sh", ".bat", ".ps1", # Plain Text & Code
+    ".csv", ".tsv", # Delimited Text
+    ".json", ".xml", ".svg", # Structured Text & Vector Graphics
+    ".xls", ".xlsx", # Excel
+    ".rtf", # Rich Text
+    ".odt", ".ods", ".odp", # OpenDocument
+    ".epub", # Ebook
+    ".eml", ".msg", # Email
+    ".pdf", # PDF
+    ".docx", # Word
+    ".ppt", ".pptx", # PowerPoint
+    ".html", ".htm", # HTML
+    ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp", # Common Images
+    ".heic", ".heif" # High Efficiency Images
+]
+
+mode_selector = widgets.RadioButtons(
+    options=['Upload Files (Widget)', 'Specify File Path'],
+    description='Select Mode:', disabled=False, value='Upload Files (Widget)'
+)
+upload_widget = widgets.FileUpload(
+    accept=','.join(sorted(list(set(supported_extensions)))), # Ensure unique and sorted
+    multiple=True, description="Upload Files", layout={'display': 'block'}
+)
+file_path_widget = widgets.Text(
+    placeholder='Enter file or directory path', description='File Path:',
+    disabled=False, layout={'display': 'none', 'width': '80%'}
+)
+recursive_checkbox = widgets.Checkbox(
+    value=False, description='Process directory recursively',
+    disabled=False, layout={'display': 'none'}
+)
+process_button = widgets.Button(
+    description="Convert Uploaded to TXT", button_style='success',
+    tooltip='Click to extract text', icon='cogs', layout={'display': 'block'}
+)
+output_area = widgets.Output(layout={'border': '1px solid black', 'padding': '5px', 'margin_top': '10px', 'max_height': '400px', 'overflow_y': 'auto'})
+
+
+def on_mode_change(change):
+    if change['new'] == 'Upload Files (Widget)':
+        upload_widget.layout.display = 'block'
+        file_path_widget.layout.display = 'none'
+        recursive_checkbox.layout.display = 'none'
+        process_button.description = "Convert Uploaded to TXT"
+    else:  # 'Specify File Path'
+        upload_widget.layout.display = 'none'
+        file_path_widget.layout.display = 'block'
+        recursive_checkbox.layout.display = 'block'
+        process_button.description = "Process Path to TXT"
+    process_button.layout.display = 'block'
+
+mode_selector.observe(on_mode_change, names='value')
+
+def on_process_clicked(b):
+    process_button.disabled = True
+    process_button.icon = "spinner"
+    with output_area:
+        clear_output(wait=True)
+        start_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"--- Starting File Processing ({start_time_str}) ---")
+        total_processed = 0; total_success = 0; total_errors = 0; total_no_output = 0
+
+        if mode_selector.value == 'Upload Files (Widget)':
+            uploaded_items = upload_widget.value
+            if not uploaded_items:
+                print("No files uploaded. Please select files.")
+            else:
+                # Standardize to list of dicts if needed (ipywidgets 8.x gives tuple of dicts)
+                files_to_process = list(uploaded_items) if isinstance(uploaded_items, (list, tuple)) else list(uploaded_items.values())
+
+                print(f"Processing {len(files_to_process)} uploaded file(s)...")
+                for i, file_info in enumerate(files_to_process):
+                    file_name = file_info.get('name', f'unknown_file_{i+1}')
+                    print(f"\n--- Uploaded file {i+1}/{len(files_to_process)}: {file_name} ---")
+                    temp_file_path = None
+                    try:
+                        file_bytes = file_info['content'] # content is BytesIO or bytes
+                        # Ensure it's bytes
+                        if hasattr(file_bytes, 'getvalue'): file_bytes = file_bytes.getvalue()
+
+                        temp_dir = "temp_uploads"
+                        os.makedirs(temp_dir, exist_ok=True)
+                        temp_file_path = os.path.join(temp_dir, file_name)
+
+                        with open(temp_file_path, 'wb') as f_out: f_out.write(file_bytes)
+                        if VERBOSE_MODE: print(f"Saved temporary file: {temp_file_path}")
+
+                        # Use process_file_path to leverage its counting and error handling
+                        p, s, e, n, _ = process_file_path(temp_file_path, False)
+                        total_processed += p; total_success +=s; total_errors += e; total_no_output += n
+
+                    except Exception as e_upload_proc:
+                        print(f"ERROR processing uploaded file '{file_name}': {e_upload_proc}")
+                        total_errors += 1; total_processed +=1
+                    finally:
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            try: os.remove(temp_file_path)
+                            except Exception as e_clean: print(f"Warning: Could not remove temp file {temp_file_path}: {e_clean}")
+            upload_widget.value = () # Clear uploaded files
+        else:  # 'Specify File Path'
+            path_to_process = file_path_widget.value.strip()
+            if not path_to_process:
+                print("No file path specified.")
+            else:
+                is_recursive = recursive_checkbox.value
+                p, s, e, n, _ = process_file_path(path_to_process, is_recursive)
+                total_processed =p; total_success=s; total_errors=e; total_no_output=n
+            # file_path_widget.value = '' # Optionally clear path
+
+        end_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n--- Processing Complete ({end_time_str}) ---")
+        print(f"Total files/paths considered: {total_processed}")
+        print(f"Successfully generated text files: {total_success}")
+        print(f"Files with errors during processing: {total_errors}")
+        print(f"Files yielding no text output (e.g., unsupported, empty, internal fail): {total_no_output}")
+
+    process_button.disabled = False
+    process_button.icon = "cogs"
+
+process_button.on_click(on_process_clicked)
+
+# Display UI
+display(widgets.HTML("<h2>Universal Text Extractor</h2>"))
+display(widgets.HTML("<p>Choose input mode, then select files or specify a path, and click 'Process'.</p>"))
+display(mode_selector)
+display(upload_widget)
+display(file_path_widget)
+display(recursive_checkbox)
+display(process_button)
+display(output_area)
+
+# Initial UI state based on mode_selector default
+on_mode_change({'new': mode_selector.value})
+
+# --- UPDATED UI Status Block ---
+display(widgets.HTML(f"""
+<div style="margin-top: 20px; border: 1px solid #ddd; padding: 10px; border-radius: 5px; background-color: #f9f9f9;">
+<h4>Instructions & Capabilities</h4>
+<p><strong>Select Mode:</strong>
+    'Upload Files' for browser-based uploads, or
+    'Specify File Path' to process files/directories on the server where this script is running.
+</p>
+<p><strong>Supported file types:</strong> {', '.join(sorted(list(set(e.lstrip('.') for e in supported_extensions))))}</p>
+<p><strong>In a Secure/Limited Environment:</strong>
+    <ul>
+        <li>Text-based files (DOCX, PDF with text, TXT, CSV, JSON, XML, ODT, etc.) are generally processed reliably.</li>
+        <li>Image-based files (PNG, JPG, TIFF, HEIC, scanned PDFs) depend on Tesseract OCR and EasyOCR.
+            <ul>
+                <li>If Tesseract is available and working: OCR will be attempted using Tesseract.</li>
+                <li>If Tesseract is missing/not working: EasyOCR will be used for image text extraction.</li>
+                <li>If neither Tesseract nor EasyOCR are available: Basic image analysis will be provided instead of text.</li>
+            </ul>
+        </li>
+        <li>PDFs are processed first for embedded text; if none, OCR is attempted on page images. This requires Tesseract & Poppler, or EasyOCR as a fallback.</li>
+    </ul>
+</p>
+<h4>Dependencies Status</h4>
+<ul style="list-style-type: none; padding-left: 0;">
+    <li>Pillow (Image Processing Core): <span style="color: {'green' if Image else 'red'}; font-weight: bold;">{'✓ Available' if Image else '✗ Not Available (Critical for images & some PDFs)'}</span></li>
+    <li>OCR Engine (Tesseract or EasyOCR):
+        <ul style="padding-left: 15px;">
+            <li>Tesseract OCR: <span style="color: {'green' if tesseract_working else 'orange' if pytesseract else 'red'}; font-weight: bold;">
+                {'✓ Working' if tesseract_working else ('⚠️ Pytesseract imported, but Tesseract not fully functional (check version, path, language data)' if pytesseract else '✗ Not Available (Pytesseract library or Tesseract engine missing)')}</span>
+                {'(Language: "eng" checked)' if tesseract_working else ''}
+            </li>
+            <li>EasyOCR: <span style="color: {'green' if has_easyocr else 'grey'}; font-weight: bold;">
+                {'✓ Available' if has_easyocr else '○ Not Available (Fallback OCR via EasyOCR will be skipped)'}</span>
+            </li>
+        </ul>
+    </li>
+    <li>Poppler (PDF to Image for OCR): <span style="color: {'green' if poppler_working else 'orange' if convert_from_path else 'red'}; font-weight: bold;">
+        {'✓ Available' if poppler_working else ('⚠️ pdf2image imported, but Poppler utilities may be missing/not in PATH' if convert_from_path else '✗ Not Available (pdf2image library or Poppler missing)')}</span>
+    </li>
+    <li>pillow-heif (HEIC/HEIF image support): <span style="color: {'green' if has_heif_support else 'grey'}; font-weight: bold;">
+        {'✓ Available' if has_heif_support else '○ Not Available (HEIC/HEIF files will be skipped)'}</span>
+    </li>
+    <li>OpenCV (Advanced Image Preprocessing): <span style="color: {'green' if has_opencv else 'grey'}; font-weight: bold;">
+        {'✓ Available' if has_opencv else '○ Not Available (Using Pillow fallbacks for some image operations)'}</span>
+    </li>
+    <li>Pandas (Excel, advanced CSV/TSV): <span style="color: {'green' if pd else 'grey'}; font-weight: bold;">
+        {'✓ Available' if pd else '○ Not Available (Using basic CSV module for CSV/TSV; Excel will be skipped)'}</span>
+    </li>
+    <li>python-docx (DOCX): <span style="color: {'green' if Document else 'grey'}; font-weight: bold;">
+        {'✓ Available' if Document else '○ Not Available (Using docx2txt if available, or skipping DOCX)'}</span>
+    </li>
+    <li>python-pptx (PPTX): <span style="color: {'green' if Presentation else 'grey'}; font-weight: bold;">
+        {'✓ Available' if Presentation else '○ Not Available (PPTX files will be skipped)'}</span>
+    </li>
+     <li>BeautifulSoup4 (HTML/XML parsing, EML/MSG HTML body): <span style="color: {'green' if BeautifulSoup else 'grey'}; font-weight: bold;">
+        {'✓ Available' if BeautifulSoup else '○ Not Available (Using regex/basic parsing for HTML/email bodies)'}</span>
+    </li>
+    <li>Other libraries (fitz, PyPDF2, striprtf, odfpy, ebooklib, extract_msg) status not explicitly shown but errors will be logged if they fail during processing for relevant file types.</li>
+</ul>
+</div>
+"""))
+
+# Set VERBOSE_MODE to True for detailed console output during development/debugging
+# VERBOSE_MODE = True
+# print(f"Verbose mode is currently: {'ON' if VERBOSE_MODE else 'OFF'}")
