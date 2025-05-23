@@ -1,0 +1,11 @@
+{
+  "users": [
+    {
+      "username": "admin",
+      "password_hash": "4OKKts4bnBdXHzJ8TrkthUj9KKMYAUUUf/ljV55yYpE=",
+      "role": "admin",
+      "created_at": 1748013462.9737506,
+      "require_password_change": true
+    }
+  ]
+}

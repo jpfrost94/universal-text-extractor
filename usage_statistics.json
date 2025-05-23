@@ -1,0 +1,18 @@
+{
+  "total_files_processed": 0,
+  "successful_extractions": 0,
+  "failed_extractions": 0,
+  "file_types": {},
+  "file_sizes": {
+    "0-1MB": 0,
+    "1-5MB": 0,
+    "5-10MB": 0,
+    "10MB+": 0
+  },
+  "ocr_usage": 0,
+  "avg_processing_time": 0,
+  "users": {},
+  "processing_dates": {},
+  "daily_usage": {},
+  "created_at": "2025-05-23T15:17:42.975497"
+}

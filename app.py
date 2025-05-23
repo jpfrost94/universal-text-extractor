@@ -11,6 +11,14 @@ from utils.file_handlers import (
 from utils.export_utils import export_text
 from utils.ocr_utils import is_ocr_available, get_available_ocr_backends
 from utils.image_processing import preprocess_image
+from utils.analytics import (
+    initialize_analytics, log_extraction_event, 
+    get_analytics_summary, reset_analytics
+)
+from utils.auth import (
+    initialize_users, authenticate_user, is_admin,
+    add_user, change_password, ROLE_ADMIN
+)
 
 # Page configuration
 st.set_page_config(
@@ -35,6 +43,20 @@ if 'ocr_used' not in st.session_state:
     st.session_state.ocr_used = False
 if 'log_messages' not in st.session_state:
     st.session_state.log_messages = []
+    
+# Authentication state
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'username' not in st.session_state:
+    st.session_state.username = None
+if 'is_admin' not in st.session_state:
+    st.session_state.is_admin = False
+
+# Initialize authentication system
+initialize_users()
+
+# Initialize analytics
+initialize_analytics()
 
 def add_log(message, level="info"):
     """Add a timestamped log message to the session state."""
@@ -56,9 +78,15 @@ def format_file_types():
         result[category] = ", ".join([f"*.{ext}" for ext in extensions])
     return result
 
+# Initialize analytics
+initialize_analytics()
+
 # Sidebar
 with st.sidebar:
     st.title("Text Extraction Tool")
+    
+    # Navigation
+    page = st.radio("Navigation", ["Text Extraction", "Usage Statistics"], label_visibility="collapsed")
     
     # OCR availability info
     ocr_available = is_ocr_available()
@@ -94,15 +122,100 @@ with st.sidebar:
         For issues or questions, please contact your IT department.
         """)
 
-# Main area
-st.title("Document Text Extractor")
-
-# File uploader
-uploaded_file = st.file_uploader(
-    "Upload a document to extract text", 
-    type=sum(SUPPORTED_FILE_TYPES.values(), []),
-    help="Upload a file to extract text from it."
-)
+# Main content based on selected page
+if page == "Text Extraction":
+    # Text Extraction UI
+    st.title("Document Text Extractor")
+    
+    # File uploader
+    uploaded_file = st.file_uploader(
+        "Upload a document to extract text", 
+        type=sum(SUPPORTED_FILE_TYPES.values(), []),
+        help="Upload a file to extract text from it."
+    )
+elif page == "Usage Statistics":
+    st.title("Usage Statistics")
+    
+    # Display the analytics dashboard
+    st.write("This page shows anonymous usage statistics about how the text extraction tool is being used.")
+    
+    # Get statistics summary
+    stats = get_analytics_summary()
+    
+    # Display key metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Files Processed", stats["total_files_processed"])
+    
+    with col2:
+        success_rate = f"{stats['successful_rate']:.1f}%"
+        st.metric("Success Rate", success_rate)
+    
+    with col3:
+        ocr_rate = f"{stats['ocr_usage_rate']:.1f}%"
+        st.metric("OCR Usage", ocr_rate)
+    
+    # File Type Analysis
+    st.subheader("File Type Analysis")
+    
+    if stats["top_file_types"]:
+        # Create data for a chart
+        labels = [f".{ft}" for ft, _ in stats["top_file_types"]]
+        values = [count for _, count in stats["top_file_types"]]
+        
+        # Display as a table for now (could be a chart in a real implementation)
+        file_type_data = {"File Type": labels, "Count": values}
+        st.table(file_type_data)
+    else:
+        st.info("No file type data available yet.")
+    
+    # File Size Distribution
+    st.subheader("File Size Distribution")
+    
+    file_sizes = stats["file_sizes"]
+    if sum(file_sizes.values()) > 0:
+        # Display as a table
+        size_data = {"Size Range": list(file_sizes.keys()), "Count": list(file_sizes.values())}
+        st.table(size_data)
+    else:
+        st.info("No file size data available yet.")
+    
+    # Usage Trend
+    st.subheader("Usage Trend (Last 7 Days)")
+    
+    trend_data = {"Date": stats["usage_trend"]["days"], "Files Processed": stats["usage_trend"]["counts"]}
+    st.line_chart(trend_data, x="Date")
+    
+    # Top Users (if tracking is enabled)
+    if stats["top_users"] and stats["top_users"][0][0] != "anonymous":
+        st.subheader("Top Users")
+        user_data = {"User": [u for u, _ in stats["top_users"]], "Files Processed": [c for _, c in stats["top_users"]]}
+        st.table(user_data)
+    
+    # Admin controls
+    st.divider()
+    if st.button("Reset Statistics", type="secondary"):
+        reset_analytics()
+        st.success("Usage statistics have been reset.")
+        st.rerun()
+    
+    # Download CSV option
+    if os.path.exists("usage_statistics.csv"):
+        with open("usage_statistics.csv", "rb") as file:
+            st.download_button(
+                label="Download Statistics as CSV",
+                data=file,
+                file_name="text_extractor_statistics.csv",
+                mime="text/csv"
+            )
+else:
+    # File uploader (fallback if the navigation somehow fails)
+    uploaded_file = st.file_uploader(
+        "Upload a document to extract text", 
+        type=sum(SUPPORTED_FILE_TYPES.values(), []),
+        help="Upload a file to extract text from it."
+    )
 
 # OCR and image processing options
 show_advanced = False
@@ -229,12 +342,29 @@ if process_clicked and uploaded_file is not None:
         status_text.text("Processing complete!")
         
         # Set status based on extraction result
+        success = False
         if extracted_text.strip():
             st.session_state.extraction_status = "Success"
             add_log(f"Text extraction completed in {elapsed_time:.2f} seconds")
+            success = True
         else:
             st.session_state.extraction_status = "Warning"
             add_log("No text was extracted from the document", level="warning")
+        
+        # Record analytics for this extraction
+        # Get the file size in bytes
+        file_size = len(uploaded_file.getvalue())
+        
+        # Log the extraction event
+        log_extraction_event(
+            file_name=uploaded_file.name,
+            file_type=file_type,
+            file_size_bytes=file_size,
+            processing_time=elapsed_time,
+            success=success,
+            ocr_used=ocr_used,
+            user_id="anonymous"  # You can track user ID if you implement auth
+        )
         
         # Clean up temp file
         os.unlink(tmp_file_path)
@@ -245,6 +375,24 @@ if process_clicked and uploaded_file is not None:
         add_log(f"Error extracting text: {str(e)}", level="error")
         progress_bar.progress(100)
         status_text.text("Error during processing!")
+        
+        # Log the error in analytics
+        try:
+            # Get the file size in bytes
+            file_size = len(uploaded_file.getvalue())
+            
+            # Log the failed extraction event
+            log_extraction_event(
+                file_name=uploaded_file.name,
+                file_type=getattr(st.session_state, 'file_type', 'unknown'),
+                file_size_bytes=file_size,
+                processing_time=0.0,
+                success=False,
+                ocr_used=False,
+                user_id="anonymous"
+            )
+        except Exception as analytics_error:
+            add_log(f"Error logging analytics: {str(analytics_error)}", level="error")
 
 # Display the extraction results
 if st.session_state.extraction_status:
