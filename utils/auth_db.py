@@ -82,6 +82,20 @@ def add_user(username, password, role=ROLE_USER):
     password_hash = hash_password(password)
     return db_add_user(username, password_hash, role)
 
+def change_password(username, new_password):
+    """
+    Change a user's password
+    
+    Args:
+        username: Username
+        new_password: New password (clear text)
+    
+    Returns:
+        True if changed, False if user not found
+    """
+    new_password_hash = hash_password(new_password)
+    return db_change_password(username, new_password_hash)
+
 def is_admin(username):
     """
     Check if a user is an admin

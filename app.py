@@ -55,6 +55,9 @@ if 'is_admin' not in st.session_state:
 # Initialize authentication system
 initialize_users()
 
+# Create data directory if it doesn't exist
+os.makedirs("data", exist_ok=True)
+
 def add_log(message, level="info"):
     """Add a timestamped log message to the session state."""
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -75,8 +78,7 @@ def format_file_types():
         result[category] = ", ".join([f"*.{ext}" for ext in extensions])
     return result
 
-# Initialize analytics
-initialize_analytics()
+# Analytics are now initialized by the database module
 
 # Login function
 def login():
