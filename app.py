@@ -649,39 +649,138 @@ elif page == "My Statistics":
         username = st.session_state.username
         
         # Get user-specific statistics from the database
-        # In a real implementation, this would filter by user ID
-        stats = get_analytics_summary()
+        stats = get_analytics_summary(username)
         
-        # Display user-specific stats
-        st.subheader("Your Document Processing History")
+        # Create tabs for different views
+        stats_tabs = st.tabs(["Overview", "Data Management", "Export Options"])
         
-        # User total processed
-        user_total = 0
-        for user, count in stats.get("top_users", []):
-            if user == username:
-                user_total = count
-                break
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Your Files Processed", user_total)
-        with col2:
-            st.metric("Successful Extractions", int(user_total * stats.get("success_rate", 0) / 100))
-        with col3:
-            st.metric("OCR Used", int(user_total * stats.get("ocr_usage", 0) / 100))
-        
-        # Display user's recent activity
-        st.subheader("Your Recent Activity")
-        st.info("This feature will show your recent document processing history.")
-        
-        # Tips for better extraction results
-        st.subheader("Tips for Better Results")
-        st.markdown("""
-        - For scanned documents, enable OCR processing
-        - Try image preprocessing for better OCR results
-        - For PDFs with embedded text, disable OCR to speed up processing
-        - Large files may take longer to process
-        """)
+        with stats_tabs[0]:
+            # Display user-specific stats
+            st.subheader("Your Document Processing History")
+            
+            # User total processed
+            user_total = stats["total_processed"]
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Your Files Processed", user_total)
+            with col2:
+                st.metric("Successful Extractions", int(user_total * stats.get("success_rate", 0) / 100))
+            with col3:
+                st.metric("OCR Used", int(user_total * stats.get("ocr_usage", 0) / 100))
+            
+            # Display usage trend
+            if stats["usage_trend"]["days"]:
+                st.subheader("Your Usage Over Time")
+                trend_data = {"Date": stats["usage_trend"]["days"], "Files Processed": stats["usage_trend"]["counts"]}
+                st.line_chart(trend_data, x="Date")
+            
+            # Display file type distribution
+            if stats["top_file_types"]:
+                st.subheader("File Types Processed")
+                file_type_data = {
+                    "File Type": [ft for ft, _ in stats["top_file_types"]],
+                    "Count": [count for _, count in stats["top_file_types"]]
+                }
+                st.bar_chart(file_type_data, x="File Type")
+            
+            # Tips for better extraction results
+            st.subheader("Tips for Better Results")
+            st.markdown("""
+            - For scanned documents, enable OCR processing
+            - Try image preprocessing for better OCR results
+            - For PDFs with embedded text, disable OCR to speed up processing
+            - Large files may take longer to process
+            """)
+            
+        with stats_tabs[1]:
+            st.subheader("Data Retention Policy")
+            
+            # Display data retention information
+            st.info("""
+            To optimize storage space, your extraction data is kept for a limited time:
+            - Text extraction history: 90 days
+            - Feedback submissions: 1 year
+            
+            You can export your data at any time before it expires.
+            """)
+            
+            # Show expiring data count
+            from utils.database import get_data_older_than
+            
+            expiring_extractions = len(get_data_older_than(60, "extraction_logs"))
+            if expiring_extractions > 0:
+                st.warning(f"You have {expiring_extractions} extraction records that will expire soon. Consider exporting your data.")
+            
+            # Option to manually clean up data
+            st.subheader("Data Cleanup")
+            cleanup_days = st.slider("Delete data older than (days)", min_value=30, max_value=365, value=90, step=30)
+            
+            if st.button("Clean Up Old Data"):
+                from utils.database import cleanup_old_data
+                deleted_count = cleanup_old_data(cleanup_days, "extraction_logs")
+                st.success(f"Removed {deleted_count} old extraction records.")
+                st.rerun()
+            
+        with stats_tabs[2]:
+            st.subheader("Export Your Data")
+            
+            # Export options
+            st.write("Export your extraction history and feedback in different formats.")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                export_format = st.selectbox(
+                    "Select Export Format", 
+                    ["JSON", "CSV", "TXT"],
+                    help="JSON is best for technical uses, CSV for spreadsheets, TXT for easy reading."
+                )
+            
+            with col2:
+                export_data = st.multiselect(
+                    "Data to Include",
+                    ["Extraction History", "Feedback"],
+                    default=["Extraction History"],
+                    help="Select what data to include in your export"
+                )
+            
+            # Map the selected options to the actual parameter values
+            format_map = {"JSON": "json", "CSV": "csv", "TXT": "txt"}
+            data_map = {
+                "Extraction History": "extraction_logs", 
+                "Feedback": "feedback"
+            }
+            
+            format_type = format_map[export_format]
+            data_types = [data_map[d] for d in export_data]
+            
+            if st.button("Generate Export"):
+                from utils.database import export_user_data
+                
+                export_data = export_user_data(username, format_type, data_types)
+                
+                if format_type == "json":
+                    mime_type = "application/json"
+                    file_ext = "json"
+                elif format_type == "csv":
+                    mime_type = "text/csv"
+                    file_ext = "csv"
+                else:
+                    mime_type = "text/plain"
+                    file_ext = "txt"
+                
+                # Allow user to download the export
+                st.download_button(
+                    label="Download Export",
+                    data=export_data,
+                    file_name=f"text_extractor_data_{username}_{datetime.now().strftime('%Y%m%d')}.{file_ext}",
+                    mime=mime_type
+                )
+                
+                st.success("Export generated successfully! Click the download button to save it.")
+                
+            st.info("Data exports contain only your personal data and statistics. The system automatically removes data older than the retention period to save space.")
 
 # User Feedback page
 elif page == "Feedback":
