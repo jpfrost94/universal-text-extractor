@@ -6,6 +6,8 @@ from io import BytesIO
 try:
     import pytesseract
     has_pytesseract = True
+    # For Windows, specify the Tesseract path
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 except ImportError:
     has_pytesseract = False
     pytesseract = None
@@ -107,13 +109,14 @@ def initialize_easyocr(lang="en"):
         print(f"Error initializing EasyOCR: {e}")
         return None
 
-def perform_ocr(image, language="eng"):
+def perform_ocr(image, language="eng", handwriting_mode=False):
     """
     Perform OCR on an image using available OCR libraries.
     
     Args:
         image: Path to image file or PIL Image object
         language: Language code for OCR
+        handwriting_mode: Whether to optimize for handwriting recognition
     
     Returns:
         Extracted text as string
@@ -127,16 +130,44 @@ def perform_ocr(image, language="eng"):
     # Try Tesseract first if available
     if has_pytesseract:
         try:
+            # Configure Tesseract for handwriting if requested
+            config = ""
+            if handwriting_mode:
+                # PSM 6: Uniform block of text (good for handwriting)
+                # PSM 8: Single word (for isolated handwritten words)
+                # PSM 13: Raw line (for handwritten lines)
+                config = "--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,!?;: "
+            
             if isinstance(image, str):
                 # It's a file path
-                ocr_text = pytesseract.image_to_string(Image.open(image), lang=language)
+                if config:
+                    ocr_text = pytesseract.image_to_string(Image.open(image), lang=language, config=config)
+                else:
+                    ocr_text = pytesseract.image_to_string(Image.open(image), lang=language)
             else:
                 # It's a PIL Image object
-                ocr_text = pytesseract.image_to_string(image, lang=language)
+                if config:
+                    ocr_text = pytesseract.image_to_string(image, lang=language, config=config)
+                else:
+                    ocr_text = pytesseract.image_to_string(image, lang=language)
             
             # If we got text, return it
             if ocr_text.strip():
                 return ocr_text
+            
+            # If handwriting mode failed, try again with different PSM
+            if handwriting_mode and not ocr_text.strip():
+                try:
+                    config_alt = "--psm 8"  # Try single word mode
+                    if isinstance(image, str):
+                        ocr_text = pytesseract.image_to_string(Image.open(image), lang=language, config=config_alt)
+                    else:
+                        ocr_text = pytesseract.image_to_string(image, lang=language, config=config_alt)
+                    
+                    if ocr_text.strip():
+                        return ocr_text
+                except Exception:
+                    pass  # Continue to EasyOCR fallback
             
             # If no text was found, the OCR process completed but didn't find text
             # or the image might be problematic, so we'll try EasyOCR as a fallback

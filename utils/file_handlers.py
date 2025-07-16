@@ -179,15 +179,22 @@ def extract_text_from_file(file_path, file_type=None, use_ocr=False, ocr_languag
         
         elif file_type in SUPPORTED_IMAGE_FORMATS:
             if use_ocr:
+                # Check if handwriting mode should be enabled
+                handwriting_mode = preprocess_params and preprocess_params.get("handwriting_mode", False)
+                
                 # Process image for OCR if requested
                 if preprocess_params and preprocess_params.get("enhance", False):
                     log_messages.append("Preprocessing image before OCR")
                     image = preprocess_image(file_path, preprocess_params)
-                    extracted_text = perform_ocr(image, ocr_language)
+                    extracted_text = perform_ocr(image, ocr_language, handwriting_mode)
                 else:
-                    extracted_text = perform_ocr(file_path, ocr_language)
+                    extracted_text = perform_ocr(file_path, ocr_language, handwriting_mode)
                 ocr_used = True
-                log_messages.append(f"Performed OCR on image with language: {ocr_language}")
+                
+                if handwriting_mode:
+                    log_messages.append(f"Performed handwriting OCR on image with language: {ocr_language}")
+                else:
+                    log_messages.append(f"Performed OCR on image with language: {ocr_language}")
             else:
                 log_messages.append("OCR not enabled for image file")
                 if has_pil:
@@ -253,7 +260,7 @@ def extract_text_from_file(file_path, file_type=None, use_ocr=False, ocr_languag
 
 def extract_text_from_pdf(pdf_path, use_ocr=False, ocr_language="eng", preprocess_params=None):
     """
-    Extract text from a PDF file.
+    Extract text from a PDF file with robust fallback handling.
     
     Args:
         pdf_path: Path to the PDF file
@@ -267,130 +274,200 @@ def extract_text_from_pdf(pdf_path, use_ocr=False, ocr_language="eng", preproces
     logs = []
     extracted_text = ""
     ocr_used = False
+    total_pages = 0
+    pages_with_text = 0
     
-    # Try PyMuPDF first
+    # Import OCR utilities safely
+    try:
+        from .ocr_utils import perform_ocr, is_ocr_available
+        ocr_available = is_ocr_available()
+    except ImportError:
+        ocr_available = False
+        logs.append("OCR utilities not available")
+    
+    # Try PyMuPDF first (most reliable)
     if has_pymupdf:
         try:
             logs.append("Attempting to extract text using PyMuPDF")
-            extracted_text = ""
             doc = fitz.open(pdf_path)
+            total_pages = len(doc)
+            logs.append(f"PDF has {total_pages} pages")
             
-            for page_num in range(len(doc)):
+            for page_num in range(total_pages):
                 page = doc[page_num]
                 page_text = page.get_text()
                 
-                # If page has no text and OCR is enabled, try OCR
-                if not page_text.strip() and use_ocr:
-                    logs.append(f"Page {page_num+1} appears to be scanned/image-based. Attempting OCR.")
-                    pix = page.get_pixmap()
-                    
-                    # Save pixmap to a temporary image file
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_img:
-                        pix.save(tmp_img.name)
-                        tmp_img_path = tmp_img.name
-                    
-                    # Perform OCR on the image
-                    if preprocess_params and preprocess_params.get("enhance", False):
-                        # Preprocess the image before OCR
-                        img = preprocess_image(tmp_img_path, preprocess_params)
-                        page_text = perform_ocr(img, ocr_language)
+                # Check if page has meaningful text
+                if page_text.strip():
+                    pages_with_text += 1
+                    extracted_text += f"\n--- Page {page_num+1} ---\n{page_text}\n"
+                else:
+                    # Page appears to be image-based or empty
+                    if use_ocr and ocr_available:
+                        try:
+                            logs.append(f"Page {page_num+1} has no text, attempting OCR")
+                            pix = page.get_pixmap()
+                            
+                            # Save pixmap to a temporary image file
+                            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_img:
+                                pix.save(tmp_img.name)
+                                tmp_img_path = tmp_img.name
+                            
+                            # Perform OCR on the image
+                            try:
+                                if preprocess_params and preprocess_params.get("enhance", False):
+                                    from .image_processing import preprocess_image
+                                    img = preprocess_image(tmp_img_path, preprocess_params)
+                                    page_text = perform_ocr(img, ocr_language)
+                                else:
+                                    page_text = perform_ocr(tmp_img_path, ocr_language)
+                                
+                                if page_text.strip():
+                                    extracted_text += f"\n--- Page {page_num+1} (OCR) ---\n{page_text}\n"
+                                    ocr_used = True
+                                    pages_with_text += 1
+                                else:
+                                    extracted_text += f"\n--- Page {page_num+1} ---\n[No text detected on this page]\n"
+                            except Exception as ocr_error:
+                                logs.append(f"OCR failed for page {page_num+1}: {str(ocr_error)}")
+                                extracted_text += f"\n--- Page {page_num+1} ---\n[OCR failed for this page]\n"
+                            
+                            # Clean up temporary file
+                            try:
+                                os.unlink(tmp_img_path)
+                            except:
+                                pass
+                                
+                        except Exception as page_ocr_error:
+                            logs.append(f"Could not process page {page_num+1} for OCR: {str(page_ocr_error)}")
+                            extracted_text += f"\n--- Page {page_num+1} ---\n[Could not process this page]\n"
                     else:
-                        page_text = perform_ocr(tmp_img_path, ocr_language)
-                    
-                    # Remove the temporary image file
-                    os.unlink(tmp_img_path)
-                    ocr_used = True
-                
-                extracted_text += f"\n--- Page {page_num+1} ---\n{page_text}\n"
+                        # No OCR available or not requested
+                        if not use_ocr:
+                            extracted_text += f"\n--- Page {page_num+1} ---\n[Page appears to be image-based. Enable OCR to extract text.]\n"
+                        else:
+                            extracted_text += f"\n--- Page {page_num+1} ---\n[OCR not available for this page]\n"
             
             doc.close()
             
-            if not extracted_text.strip():
-                logs.append("No text extracted with PyMuPDF")
-            else:
-                logs.append(f"Successfully extracted text from PDF using PyMuPDF")
+            if pages_with_text > 0:
+                logs.append(f"Successfully extracted text from {pages_with_text}/{total_pages} pages using PyMuPDF")
                 return extracted_text, ocr_used, logs
+            else:
+                logs.append("No text found in any pages with PyMuPDF")
                 
         except Exception as e:
             logs.append(f"PyMuPDF extraction failed: {str(e)}")
     else:
-        logs.append("PyMuPDF not available, trying alternative methods")
+        logs.append("PyMuPDF not available, trying PyPDF2")
     
-    # Fallback to PyPDF2
-    if has_pypdf2 and not extracted_text:
+    # Fallback to PyPDF2 if PyMuPDF failed or unavailable
+    if has_pypdf2 and (not extracted_text.strip() or pages_with_text == 0):
         try:
             logs.append("Attempting to extract text using PyPDF2")
-            extracted_text = ""
+            fallback_text = ""
+            
             with open(pdf_path, 'rb') as file:
                 reader = PyPDF2.PdfReader(file)
+                total_pages = len(reader.pages)
+                pages_with_text = 0
                 
-                for page_num in range(len(reader.pages)):
-                    page = reader.pages[page_num]
-                    page_text = page.extract_text()
-                    
-                    # If page has no text and OCR is enabled, we would need to convert to image
-                    # But PyPDF2 doesn't have built-in image conversion
-                    
-                    extracted_text += f"\n--- Page {page_num+1} ---\n{page_text}\n"
+                for page_num in range(total_pages):
+                    try:
+                        page = reader.pages[page_num]
+                        page_text = page.extract_text()
+                        
+                        if page_text.strip():
+                            fallback_text += f"\n--- Page {page_num+1} ---\n{page_text}\n"
+                            pages_with_text += 1
+                        else:
+                            fallback_text += f"\n--- Page {page_num+1} ---\n[No text found on this page]\n"
+                            
+                    except Exception as page_error:
+                        logs.append(f"Error processing page {page_num+1} with PyPDF2: {str(page_error)}")
+                        fallback_text += f"\n--- Page {page_num+1} ---\n[Error processing this page]\n"
             
-            if not extracted_text.strip():
-                logs.append("No text extracted with PyPDF2")
-            else:
-                logs.append(f"Successfully extracted text from PDF using PyPDF2")
+            if pages_with_text > 0:
+                extracted_text = fallback_text
+                logs.append(f"Successfully extracted text from {pages_with_text}/{total_pages} pages using PyPDF2")
                 return extracted_text, ocr_used, logs
+            else:
+                logs.append("No text extracted with PyPDF2")
                 
         except Exception as e:
             logs.append(f"PyPDF2 extraction failed: {str(e)}")
     
-    # If no text has been extracted yet and OCR is enabled, try full PDF OCR
-    if not extracted_text.strip() and use_ocr:
-        # Try to convert PDF to images and OCR
-        logs.append("PDF appears to be scanned/image-based. Attempting full document OCR.")
-        
+    # Final attempt: Full document OCR if requested and available
+    if (not extracted_text.strip() or pages_with_text == 0) and use_ocr and ocr_available:
         try:
+            logs.append("Attempting full document OCR using pdf2image")
             from pdf2image import convert_from_path
             
-            extracted_text = ""
             # Convert PDF to images
             images = convert_from_path(pdf_path)
+            ocr_text = ""
             
             for i, img in enumerate(images):
-                # Save image to a temporary file
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_img:
-                    img.save(tmp_img.name)
-                    tmp_img_path = tmp_img.name
-                
-                # Perform OCR on the image
-                if preprocess_params and preprocess_params.get("enhance", False):
-                    # Preprocess the image before OCR
-                    processed_img = preprocess_image(tmp_img_path, preprocess_params)
-                    page_text = perform_ocr(processed_img, ocr_language)
-                else:
-                    page_text = perform_ocr(tmp_img_path, ocr_language)
-                
-                # Remove the temporary image file
-                os.unlink(tmp_img_path)
-                
-                extracted_text += f"\n--- Page {i+1} ---\n{page_text}\n"
-                ocr_used = True
+                try:
+                    # Save image to a temporary file
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_img:
+                        img.save(tmp_img.name)
+                        tmp_img_path = tmp_img.name
+                    
+                    # Perform OCR on the image
+                    if preprocess_params and preprocess_params.get("enhance", False):
+                        from .image_processing import preprocess_image
+                        processed_img = preprocess_image(tmp_img_path, preprocess_params)
+                        page_text = perform_ocr(processed_img, ocr_language)
+                    else:
+                        page_text = perform_ocr(tmp_img_path, ocr_language)
+                    
+                    # Clean up temporary file
+                    try:
+                        os.unlink(tmp_img_path)
+                    except:
+                        pass
+                    
+                    if page_text.strip():
+                        ocr_text += f"\n--- Page {i+1} (Full OCR) ---\n{page_text}\n"
+                        ocr_used = True
+                    else:
+                        ocr_text += f"\n--- Page {i+1} ---\n[No text detected]\n"
+                        
+                except Exception as page_error:
+                    logs.append(f"OCR failed for page {i+1}: {str(page_error)}")
+                    ocr_text += f"\n--- Page {i+1} ---\n[OCR failed]\n"
             
-            logs.append(f"Completed full document OCR using pdf2image and OCR")
+            if ocr_text.strip():
+                extracted_text = ocr_text
+                logs.append(f"Completed full document OCR for {len(images)} pages")
+                return extracted_text, ocr_used, logs
             
         except ImportError:
-            logs.append("pdf2image not available for PDF to image conversion")
+            logs.append("pdf2image not available for full document OCR")
         except Exception as e:
             logs.append(f"Full document OCR failed: {str(e)}")
     
-    # Final fallback message if nothing worked
+    # Provide informative message based on what we found
     if not extracted_text.strip():
-        extracted_text = "[No text could be extracted from this PDF. It may be scanned, image-based, or protected.]"
-        logs.append("Could not extract any text from the PDF")
+        if total_pages > 0:
+            if use_ocr:
+                if not ocr_available:
+                    extracted_text = f"[PDF has {total_pages} pages but appears to be image-based or scanned. OCR is not available to extract text from images.]"
+                else:
+                    extracted_text = f"[PDF has {total_pages} pages but no text could be extracted. The document may be protected, corrupted, or contain only images.]"
+            else:
+                extracted_text = f"[PDF has {total_pages} pages but appears to be image-based or scanned. Enable OCR to extract text from scanned documents.]"
+        else:
+            extracted_text = "[Could not process this PDF file. It may be corrupted, protected, or in an unsupported format.]"
+        
+        logs.append("No text could be extracted from the PDF")
     
     return extracted_text, ocr_used, logs
 
 def extract_text_from_doc(doc_path):
     """
-    Extract text from a DOC/DOCX file.
+    Extract text from a DOC/DOCX file, including embedded images, shapes, and complex elements.
     
     Args:
         doc_path: Path to the DOC/DOCX file
@@ -401,66 +478,139 @@ def extract_text_from_doc(doc_path):
     logs = []
     extracted_text = ""
     
-    # Try docx2txt first (for DOCX files)
-    if has_docx2txt and doc_path.lower().endswith(".docx"):
-        try:
-            logs.append("Attempting to extract text using docx2txt")
-            extracted_text = docx2txt.process(doc_path)
-            
-            if extracted_text.strip():
-                logs.append("Successfully extracted text using docx2txt")
-                return extracted_text, logs
-            else:
-                logs.append("No text extracted with docx2txt")
-        except Exception as e:
-            logs.append(f"docx2txt extraction failed: {str(e)}")
-    
-    # Try python-docx as an alternative
+    # Try python-docx first for comprehensive extraction
     if has_python_docx and doc_path.lower().endswith(".docx"):
         try:
-            logs.append("Attempting to extract text using python-docx")
+            logs.append("Attempting enhanced text extraction using python-docx")
             doc = Document(doc_path)
             
-            # Extract paragraphs
-            paragraphs_text = [paragraph.text for paragraph in doc.paragraphs]
+            text_parts = []
+            image_count = 0
+            shape_count = 0
+            table_count = 0
             
-            # Extract tables
-            tables_text = []
-            for table in doc.tables:
-                for row in table.rows:
-                    row_text = [cell.text for cell in row.cells]
-                    tables_text.append(" | ".join(row_text))
+            # Extract paragraphs with enhanced processing
+            for para_idx, paragraph in enumerate(doc.paragraphs):
+                para_text = paragraph.text.strip()
+                if para_text:
+                    text_parts.append(para_text)
+                
+                # Check for embedded images in paragraph runs
+                for run in paragraph.runs:
+                    # Check for embedded objects/images
+                    if hasattr(run, '_element'):
+                        # Look for drawing elements (images, shapes)
+                        drawings = run._element.xpath('.//w:drawing')
+                        if drawings:
+                            image_count += len(drawings)
+                            text_parts.append(f"[Embedded image detected - may contain text. Enable OCR for image text extraction.]")
+                        
+                        # Look for embedded objects
+                        objects = run._element.xpath('.//w:object')
+                        if objects:
+                            shape_count += len(objects)
+                            text_parts.append(f"[Embedded object detected - may contain text or data.]")
             
-            # Combine all text
-            extracted_text = "\n".join(paragraphs_text)
+            # Extract tables with enhanced processing
+            for table_idx, table in enumerate(doc.tables):
+                table_count += 1
+                table_text = [f"\n--- Table {table_idx + 1} ---"]
+                
+                for row_idx, row in enumerate(table.rows):
+                    row_text = []
+                    for cell_idx, cell in enumerate(row.cells):
+                        cell_text = cell.text.strip()
+                        if cell_text:
+                            row_text.append(cell_text)
+                        
+                        # Check for images in table cells
+                        for paragraph in cell.paragraphs:
+                            for run in paragraph.runs:
+                                if hasattr(run, '_element'):
+                                    drawings = run._element.xpath('.//w:drawing')
+                                    if drawings:
+                                        image_count += len(drawings)
+                                        row_text.append("[Image in cell]")
+                    
+                    if row_text:
+                        if row_idx == 0:
+                            table_text.append(f"Header: {' | '.join(row_text)}")
+                        else:
+                            table_text.append(f"Row {row_idx}: {' | '.join(row_text)}")
+                
+                text_parts.extend(table_text)
             
-            if tables_text:
-                extracted_text += "\n\n--- Tables ---\n"
-                extracted_text += "\n".join(tables_text)
+            # Try to extract text from headers and footers
+            try:
+                for section in doc.sections:
+                    # Header text
+                    if section.header:
+                        header_text = []
+                        for paragraph in section.header.paragraphs:
+                            if paragraph.text.strip():
+                                header_text.append(paragraph.text.strip())
+                        if header_text:
+                            text_parts.insert(0, f"--- Header ---\n{chr(10).join(header_text)}")
+                    
+                    # Footer text
+                    if section.footer:
+                        footer_text = []
+                        for paragraph in section.footer.paragraphs:
+                            if paragraph.text.strip():
+                                footer_text.append(paragraph.text.strip())
+                        if footer_text:
+                            text_parts.append(f"--- Footer ---\n{chr(10).join(footer_text)}")
+            except Exception as header_footer_error:
+                logs.append(f"Could not extract headers/footers: {str(header_footer_error)}")
+            
+            # Combine all extracted text
+            extracted_text = "\n".join(text_parts)
+            
+            # Enhanced logging
+            logs.append(f"Document analysis: {len(doc.paragraphs)} paragraphs, {table_count} tables")
+            if image_count > 0:
+                logs.append(f"Found {image_count} embedded images")
+            if shape_count > 0:
+                logs.append(f"Found {shape_count} embedded objects/shapes")
             
             if extracted_text.strip():
-                logs.append("Successfully extracted text using python-docx")
+                logs.append("Successfully extracted text using enhanced python-docx processing")
                 return extracted_text, logs
             else:
                 logs.append("No text extracted with python-docx")
         except Exception as e:
             logs.append(f"python-docx extraction failed: {str(e)}")
     
-    # For DOC files or if other methods fail, indicate limitation
+    # Fallback to docx2txt (simpler but sometimes more reliable)
+    if has_docx2txt and doc_path.lower().endswith(".docx") and not extracted_text.strip():
+        try:
+            logs.append("Attempting fallback extraction using docx2txt")
+            fallback_text = docx2txt.process(doc_path)
+            
+            if fallback_text.strip():
+                extracted_text = fallback_text
+                logs.append("Successfully extracted text using docx2txt fallback")
+                return extracted_text, logs
+            else:
+                logs.append("No text extracted with docx2txt fallback")
+        except Exception as e:
+            logs.append(f"docx2txt fallback failed: {str(e)}")
+    
+    # Handle legacy DOC files
     if doc_path.lower().endswith(".doc"):
-        extracted_text = "[DOC (legacy format) file detected. For best results, convert to DOCX format.]"
+        extracted_text = "[DOC (legacy format) file detected. For best results, convert to DOCX format. Legacy DOC files may contain embedded images and objects that cannot be processed.]"
         logs.append("Legacy DOC format detected, limited extraction support")
     
-    # If we got here and have no text, it means all methods failed
-    if not extracted_text:
-        extracted_text = "[Could not extract text from this document. It may be protected or corrupted.]"
+    # Final fallback message
+    if not extracted_text.strip():
+        extracted_text = "[Could not extract text from this document. It may be protected, corrupted, or contain primarily non-text elements like images and shapes.]"
         logs.append("All document extraction methods failed")
     
     return extracted_text, logs
 
 def extract_text_from_ppt(ppt_path):
     """
-    Extract text from a PPT/PPTX file.
+    Extract text from a PPT/PPTX file, including embedded images and complex shapes.
     
     Args:
         ppt_path: Path to the PPT/PPTX file
@@ -474,34 +624,142 @@ def extract_text_from_ppt(ppt_path):
     # Check if python-pptx is available and the file is PPTX
     if has_python_pptx and ppt_path.lower().endswith(".pptx"):
         try:
-            logs.append("Attempting to extract text using python-pptx")
+            logs.append("Attempting to extract text using python-pptx with enhanced shape processing")
             prs = Presentation(ppt_path)
             
             slide_texts = []
+            total_shapes = 0
+            text_shapes = 0
+            image_shapes = 0
+            
             for slide_idx, slide in enumerate(prs.slides, 1):
                 slide_text = [f"--- Slide {slide_idx} ---"]
+                slide_shape_count = 0
+                slide_text_found = False
                 
                 # Get slide title if available
-                if slide.shapes.title:
+                if slide.shapes.title and slide.shapes.title.text.strip():
                     slide_text.append(f"Title: {slide.shapes.title.text}")
+                    slide_text_found = True
                 
-                # Extract text from all shapes
-                for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text:
-                        # Skip if it's the title we already added
-                        if shape == slide.shapes.title:
-                            continue
-                        slide_text.append(shape.text)
+                # Process all shapes comprehensively
+                for shape_idx, shape in enumerate(slide.shapes):
+                    total_shapes += 1
+                    slide_shape_count += 1
+                    
+                    try:
+                        # Handle text boxes and text frames
+                        if hasattr(shape, "text") and shape.text.strip():
+                            # Skip if it's the title we already added
+                            if hasattr(slide.shapes, 'title') and shape == slide.shapes.title:
+                                continue
+                            
+                            shape_text = shape.text.strip()
+                            if shape_text:
+                                slide_text.append(f"Text Box: {shape_text}")
+                                text_shapes += 1
+                                slide_text_found = True
+                        
+                        # Handle text frames (more detailed text extraction)
+                        elif hasattr(shape, "text_frame") and shape.text_frame:
+                            frame_text = []
+                            for paragraph in shape.text_frame.paragraphs:
+                                para_text = ""
+                                for run in paragraph.runs:
+                                    if run.text.strip():
+                                        para_text += run.text
+                                if para_text.strip():
+                                    frame_text.append(para_text.strip())
+                            
+                            if frame_text:
+                                slide_text.append(f"Text Frame: {' '.join(frame_text)}")
+                                text_shapes += 1
+                                slide_text_found = True
+                        
+                        # Handle tables
+                        elif hasattr(shape, "table"):
+                            logs.append(f"Found table on slide {slide_idx}")
+                            table_text = []
+                            table = shape.table
+                            
+                            for row_idx, row in enumerate(table.rows):
+                                row_text = []
+                                for cell in row.cells:
+                                    cell_text = cell.text.strip()
+                                    if cell_text:
+                                        row_text.append(cell_text)
+                                
+                                if row_text:
+                                    if row_idx == 0:
+                                        table_text.append(f"Table Header: {' | '.join(row_text)}")
+                                    else:
+                                        table_text.append(f"Table Row: {' | '.join(row_text)}")
+                            
+                            if table_text:
+                                slide_text.extend(table_text)
+                                text_shapes += 1
+                                slide_text_found = True
+                        
+                        # Handle group shapes (shapes within groups)
+                        elif hasattr(shape, "shapes"):  # Group shape
+                            logs.append(f"Found group shape on slide {slide_idx}")
+                            group_text = []
+                            
+                            for grouped_shape in shape.shapes:
+                                if hasattr(grouped_shape, "text") and grouped_shape.text.strip():
+                                    group_text.append(grouped_shape.text.strip())
+                                elif hasattr(grouped_shape, "text_frame") and grouped_shape.text_frame:
+                                    for paragraph in grouped_shape.text_frame.paragraphs:
+                                        para_text = ""
+                                        for run in paragraph.runs:
+                                            if run.text.strip():
+                                                para_text += run.text
+                                        if para_text.strip():
+                                            group_text.append(para_text.strip())
+                            
+                            if group_text:
+                                slide_text.append(f"Group Shape: {' '.join(group_text)}")
+                                text_shapes += 1
+                                slide_text_found = True
+                        
+                        # Handle images (note presence, could be enhanced with OCR)
+                        elif hasattr(shape, "image"):
+                            image_shapes += 1
+                            slide_text.append(f"[Image detected - may contain text. Enable OCR for image text extraction.]")
+                        
+                        # Handle other shape types that might contain text
+                        elif hasattr(shape, "shape_type"):
+                            # Check for chart or other complex shapes
+                            if str(shape.shape_type).find("CHART") != -1:
+                                slide_text.append("[Chart detected - may contain text labels]")
+                            elif str(shape.shape_type).find("PICTURE") != -1:
+                                image_shapes += 1
+                                slide_text.append("[Picture detected - may contain text. Enable OCR for image text extraction.]")
+                    
+                    except Exception as shape_error:
+                        logs.append(f"Error processing shape {shape_idx} on slide {slide_idx}: {str(shape_error)}")
+                        continue
+                
+                # Add slide summary
+                if not slide_text_found:
+                    if slide_shape_count > 0:
+                        slide_text.append(f"[Slide contains {slide_shape_count} shapes but no extractable text found]")
+                    else:
+                        slide_text.append("[Empty slide or no accessible content]")
                 
                 slide_texts.append("\n".join(slide_text))
             
             extracted_text = "\n\n".join(slide_texts)
             
+            # Enhanced logging
+            logs.append(f"Processed {len(prs.slides)} slides with {total_shapes} total shapes")
+            logs.append(f"Found text in {text_shapes} shapes, {image_shapes} images detected")
+            
             if extracted_text.strip():
-                logs.append("Successfully extracted text using python-pptx")
+                logs.append("Successfully extracted text using enhanced python-pptx processing")
             else:
                 logs.append("No text found in presentation")
-                extracted_text = "[No text found in this presentation. It may contain only images or other non-text elements.]"
+                extracted_text = "[No text found in this presentation. It may contain only images, charts, or other non-text elements.]"
                 
         except Exception as e:
             logs.append(f"python-pptx extraction failed: {str(e)}")

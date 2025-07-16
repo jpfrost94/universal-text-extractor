@@ -1,6 +1,6 @@
 # Text Extraction Tool Deployment Guide
 
-This guide will help you deploy the Text Extraction Tool within your organization's on-premises environment.
+This guide will help you deploy the Universal Text Extractor in your environment.
 
 ## System Requirements
 

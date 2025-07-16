@@ -26,7 +26,7 @@ from utils.auth_db import (
 
 # Page configuration
 st.set_page_config(
-    page_title="Document Text Extractor",
+    page_title="Universal Text Extractor",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -161,7 +161,7 @@ if 'show_registration' not in st.session_state:
 
 # Sidebar
 with st.sidebar:
-    st.title("Text Extraction Tool")
+    st.title("Universal Text Extractor")
     
     # Login/logout section
     if st.session_state.authenticated:
@@ -217,7 +217,7 @@ with st.sidebar:
         - Perform OCR on images or scanned PDFs
         - Export in different formats
         
-        For issues or questions, please contact your IT department.
+        For issues or questions, please refer to the documentation.
         """)
 
 # Define user feedback storage if it doesn't exist
@@ -227,7 +227,7 @@ if 'user_feedback' not in st.session_state:
 # Main content based on selected page
 if page == "Text Extraction":
     # Text Extraction UI
-    st.title("Document Text Extractor")
+    st.title("Universal Text Extractor")
     
     # File uploader
     uploaded_file = st.file_uploader(
@@ -258,7 +258,7 @@ elif page == "Usage Statistics":
     else:
         # Display the analytics dashboard for admins
         st.success("Viewing statistics as administrator")
-        st.write("This page shows anonymous usage statistics about how the text extraction tool is being used.")
+        st.write("This page shows anonymous usage statistics about how the Universal Text Extractor is being used.")
         
         # Get statistics summary
         stats = get_analytics_summary()
@@ -784,7 +784,7 @@ elif page == "Feedback":
         
         # Feedback form
         with st.form("feedback_form"):
-            st.write("We value your feedback on the Text Extraction Tool")
+            st.write("We value your feedback on the Universal Text Extractor")
             
             feedback_type = st.selectbox(
                 "Feedback Type",
@@ -931,6 +931,6 @@ elif page == "Admin Panel":
 st.divider()
 st.markdown("""
 <div style="text-align: center; opacity: 0.7; font-size: 0.8em;">
-    Document Text Extraction Tool - For internal organizational use
+    Universal Text Extractor - Professional Document Processing
 </div>
 """, unsafe_allow_html=True)
