@@ -11,6 +11,12 @@ RUN apt-get update && apt-get install -y \
     tesseract-ocr-por \
     poppler-utils \
     libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -26,21 +32,11 @@ COPY .streamlit/ /app/.streamlit/
 # Set permissions for SQLite database directory
 RUN chmod 777 /app/data
 
+# Copy requirements file
+COPY requirements.txt /app/
+
 # Install Python dependencies
-RUN pip install --no-cache-dir \
-    streamlit>=1.27.0 \
-    pillow>=10.0.0 \
-    pytesseract>=0.3.10 \
-    pdf2image>=1.16.3 \
-    PyPDF2>=3.0.1 \
-    python-docx>=0.8.11 \
-    python-pptx>=0.6.21 \
-    beautifulsoup4>=4.12.2 \
-    striprtf>=0.0.22 \
-    pandas>=2.0.0 \
-    odfpy>=1.4.1 \
-    ebooklib>=0.18 \
-    extract-msg>=0.41.1
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Set environment variables for Tesseract
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
